@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "veelead-project-information",
+  "publisher": "PRamprathap",
+  "version": "1.0.6",
+  "name": "Project Information",
+  "description": "Maintain structured, project-scoped information under Project Settings. Data is stored per project using the official Azure DevOps project-properties API.",
+  "public": false,
+  "categories": ["Azure Repos"],
+  "tags": ["project", "settings", "governance", "delivery", "metadata"],
+  "icons": {
+    "default": "public/icons/extension-icon.png"
+  },
+  "content": {
+    "details": {
+      "path": "README.md"
+    }
+  },
+  "links": {
+    "support": {
+      "uri": "https://www.veelead.com"
+    }
+  },
+  "targets": [
+    {
+      "id": "Microsoft.VisualStudio.Services"
+    }
+  ],
+  "scopes": ["vso.project", "vso.project_write", "vso.graph"],
+  "demands": ["api-version/7.1"],
+  "contributions": [
+    {
+      "id": "project-information-hub",
+      "type": "ms.vss-web.hub",
+      "description": "Project Information page under Project Settings.",
+      "targets": ["ms.vss-web.project-admin-hub-group"],
+      "properties": {
+        "name": "Project Information",
+        "order": 100,
+        "uri": "dist/project-information.html",
+        "icon": "public/icons/extension-icon.png"
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "dist/project-information.html",
+      "addressable": true
+    },
+    {
+      "path": "public/icons",
+      "addressable": true
+    }
+  ]
+}

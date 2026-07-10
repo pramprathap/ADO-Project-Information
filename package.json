@@ -1,0 +1,58 @@
+{
+  "name": "veelead-project-information",
+  "version": "1.0.0",
+  "description": "Azure DevOps extension that maintains structured, project-scoped custom information under Project Settings.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,css,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,css,json,md}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "validate:manifest": "node scripts/validate-manifest.mjs",
+    "icons": "node scripts/generate-icon.mjs",
+    "clean": "rimraf dist dist-package",
+    "prepackage": "npm run typecheck && npm run lint && npm run test && npm run build && npm run validate:manifest",
+    "package": "npm run prepackage && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.54.17",
+    "@fluentui/react-icons": "^2.0.245",
+    "azure-devops-extension-sdk": "^5.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.8",
+    "@types/node": "^20.14.15",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@eslint/js": "^9.9.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "@vitest/coverage-v8": "^2.0.5",
+    "eslint": "^9.9.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.35.0",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "jsdom": "^24.1.1",
+    "prettier": "^3.3.3",
+    "rimraf": "^6.0.1",
+    "tfx-cli": "^0.17.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.1",
+    "vite-plugin-singlefile": "^2.0.2",
+    "vitest": "^2.0.5"
+  }
+}

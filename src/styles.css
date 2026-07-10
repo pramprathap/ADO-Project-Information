@@ -1,0 +1,101 @@
+/*
+ * Base page styles + a custom accent/semantic palette layered on top of the
+ * Fluent theme. The palette is keyed on `data-appearance` (set by useAdoTheme)
+ * so these custom colours always match the Fluent light/dark/high-contrast
+ * theme we render — which in turn follows the Azure DevOps host theme. We never
+ * hard-code a background that would fight the host theme.
+ */
+:root,
+:root[data-appearance='light'] {
+  --pi-accent: #3a6ff0;
+  --pi-accent-soft: rgba(58, 111, 240, 0.1);
+  --pi-accent-2: #12a594;
+  --pi-good: #1a7f37;
+  --pi-good-bg: rgba(26, 127, 55, 0.12);
+  --pi-warn: #9a6700;
+  --pi-warn-bg: rgba(191, 135, 0, 0.14);
+  --pi-danger: #cf222e;
+  --pi-danger-bg: rgba(207, 34, 46, 0.12);
+  --pi-violet: #8250df;
+  --pi-violet-bg: rgba(130, 80, 223, 0.12);
+  --pi-neutral-swatch: #8a94a6;
+  --pi-ring-track: #e3e8f1;
+  --pi-hero-from: rgba(58, 111, 240, 0.1);
+  --pi-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --pi-shadow-md: 0 6px 20px rgba(16, 24, 40, 0.08), 0 2px 6px rgba(16, 24, 40, 0.05);
+  --pi-glass: rgba(255, 255, 255, 0.72);
+}
+
+:root[data-appearance='dark'] {
+  --pi-accent: #5b8def;
+  --pi-accent-soft: rgba(91, 141, 239, 0.16);
+  --pi-accent-2: #33c2b3;
+  --pi-good: #4ac26b;
+  --pi-good-bg: rgba(63, 185, 80, 0.16);
+  --pi-warn: #e3b341;
+  --pi-warn-bg: rgba(210, 153, 34, 0.16);
+  --pi-danger: #f85149;
+  --pi-danger-bg: rgba(248, 81, 73, 0.16);
+  --pi-violet: #b392f0;
+  --pi-violet-bg: rgba(130, 80, 223, 0.22);
+  --pi-neutral-swatch: #66718a;
+  --pi-ring-track: #252d3b;
+  --pi-hero-from: rgba(91, 141, 239, 0.16);
+  --pi-shadow-sm: none;
+  --pi-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --pi-glass: rgba(21, 27, 38, 0.72);
+}
+
+/* High-contrast: neutralise decorative colour, defer to system colours. */
+:root[data-appearance='contrast'] {
+  --pi-accent: Highlight;
+  --pi-accent-soft: transparent;
+  --pi-accent-2: Highlight;
+  --pi-good: CanvasText;
+  --pi-good-bg: transparent;
+  --pi-warn: CanvasText;
+  --pi-warn-bg: transparent;
+  --pi-danger: CanvasText;
+  --pi-danger-bg: transparent;
+  --pi-violet: CanvasText;
+  --pi-violet-bg: transparent;
+  --pi-neutral-swatch: CanvasText;
+  --pi-ring-track: CanvasText;
+  --pi-hero-from: transparent;
+  --pi-shadow-sm: none;
+  --pi-shadow-md: none;
+  --pi-glass: Canvas;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family:
+    'Segoe UI Variable',
+    'Segoe UI',
+    -apple-system,
+    BlinkMacSystemFont,
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  /* Let the ADO host background show through the iframe. */
+  background: transparent;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}
