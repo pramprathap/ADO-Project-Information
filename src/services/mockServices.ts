@@ -3,6 +3,7 @@ import type { SdkContext } from './sdkContext';
 import type { ProjectPropertiesService } from './ProjectPropertiesService';
 import type { IdentityService } from './IdentityService';
 import type { PermissionService } from './PermissionService';
+import type { ClientDirectoryService } from './ClientDirectoryService';
 import type { PatchOperation, PropertyBag } from '@/utils/propertyMapper';
 import type { AzureDevOpsIdentity } from '@/models/AzureDevOpsIdentity';
 
@@ -93,7 +94,23 @@ export function createMockAppServices(): AppServices {
     async canEditProjectInformation() {
       return { canEdit: true, checkFailed: false };
     },
+    async isProjectAdministrator() {
+      return true;
+    },
   } as unknown as PermissionService;
 
-  return { context, properties, identities, permissions };
+  const knownClients = ['AAF', 'Brecoflex', 'NMC', 'Summit'];
+  const clientDirectory = {
+    async getClientNames() {
+      return [...knownClients];
+    },
+    async addClientName(name: string) {
+      const trimmed = name.trim();
+      if (trimmed && !knownClients.some((n) => n.toLowerCase() === trimmed.toLowerCase())) {
+        knownClients.push(trimmed);
+      }
+    },
+  } as unknown as ClientDirectoryService;
+
+  return { context, properties, identities, permissions, clientDirectory };
 }

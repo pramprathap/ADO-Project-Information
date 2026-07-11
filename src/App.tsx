@@ -23,13 +23,16 @@ import { ErrorState } from '@/components/ErrorState';
 import { PermissionBanner } from '@/components/PermissionBanner';
 import { Hero } from '@/components/Hero';
 import { StatStrip } from '@/components/StatStrip';
-import { Column, Columns, FormSection, FullWidthField } from '@/components/FormSection';
+import { Column, FormSection, FullWidthField, Sections } from '@/components/FormSection';
+import { ProjectTeam } from '@/components/ProjectTeam';
+import { ClientContactsEditor } from '@/components/ClientContactsEditor';
 import {
   DateField,
   DropdownField,
   ReadOnlyStat,
   TextAreaField,
   TextField,
+  TextSuggestField,
 } from '@/components/FormFields';
 import { PersonPicker } from '@/components/PersonPicker';
 import {
@@ -39,6 +42,7 @@ import {
   StatusGlyph,
   MailGlyph,
   CodeGlyph,
+  TeamGlyph,
 } from '@/components/icons';
 import type { ProjectInformation } from '@/models/ProjectInformation';
 import type { ValidationField } from '@/models/ValidationResult';
@@ -59,10 +63,9 @@ import { formatTimestampForDisplay } from '@/utils/dateUtils';
 const useStyles = makeStyles({
   root: {
     width: '100%',
-    maxWidth: '1500px',
     boxSizing: 'border-box',
-    margin: '0 auto',
-    padding: `${tokens.spacingVerticalL} clamp(16px, 4vw, 44px) 40px`,
+    margin: 0,
+    padding: `${tokens.spacingVerticalL} clamp(16px, 3vw, 40px) 40px`,
   },
   subtle: { color: tokens.colorNeutralForeground3 },
   banners: {
@@ -88,6 +91,18 @@ const useStyles = makeStyles({
   },
   spacer: { flex: 1 },
 });
+
+/** Running extension version, shown in the footer so the loaded build is obvious. */
+function getExtensionVersion(): string {
+  if (import.meta.env.DEV) {
+    return 'dev';
+  }
+  try {
+    return SDK.getExtensionContext()?.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 
 export function App() {
   const theme = useAdoTheme();
@@ -116,7 +131,8 @@ function ProjectForm({ services }: { services: AppServices }) {
     info,
     setInfo,
     isDirty,
-    permission,
+    isAdmin,
+    clientNameSuggestions,
     saveStatus,
     saveError,
     clearSaveStatus,
@@ -128,7 +144,7 @@ function ProjectForm({ services }: { services: AppServices }) {
   const [touched, setTouched] = useState<Set<ValidationField>>(new Set());
   const notified = useRef(false);
 
-  useUnsavedChanges(isDirty && permission.canEdit);
+  useUnsavedChanges(isDirty && isAdmin);
 
   // Notify the host exactly once the page has finished its initial load
   // (successfully rendered content, whether data loaded or a retryable error).
@@ -143,7 +159,9 @@ function ProjectForm({ services }: { services: AppServices }) {
   }, [loadStatus]);
 
   const validation = useMemo(() => validateProjectInformation(info), [info]);
-  const readOnly = !permission.canEdit;
+  // Only Project Administrators may edit. Non-admins get a fully read-only form
+  // (Save/Reset disabled). Editing is additionally enforced server-side on save.
+  const readOnly = !isAdmin;
 
   const markTouched = useCallback((field: ValidationField) => {
     setTouched((prev) => {
@@ -212,7 +230,7 @@ function ProjectForm({ services }: { services: AppServices }) {
       <Hero projectName={services.context.project.name} info={info} />
 
       <div className={styles.banners}>
-        <PermissionBanner canEdit={permission.canEdit} checkFailed={permission.checkFailed} />
+        <PermissionBanner canEdit={isAdmin} checkFailed={false} />
 
         {saveStatus === 'success' && (
           <MessageBar intent="success" politeness="polite">
@@ -244,7 +262,7 @@ function ProjectForm({ services }: { services: AppServices }) {
           </MessageBar>
         )}
 
-        {isDirty && permission.canEdit && (
+        {isDirty && isAdmin && (
           <MessageBar intent="info" politeness="polite">
             <MessageBarBody>You have unsaved changes.</MessageBarBody>
           </MessageBar>
@@ -253,7 +271,7 @@ function ProjectForm({ services }: { services: AppServices }) {
 
       <StatStrip info={info} />
 
-      <Columns>
+      <Sections>
         <Column>
           {/* Project Identification */}
           <FormSection
@@ -262,13 +280,15 @@ function ProjectForm({ services }: { services: AppServices }) {
             glyph={<IdentificationGlyph />}
             tint="blue"
           >
-            <TextField
+            <TextSuggestField
               fieldId="clientName"
               label="Client Name"
               required
               disabled={readOnly}
               value={info.clientName}
+              suggestions={clientNameSuggestions}
               maxLength={FieldLimits.ClientName}
+              placeholder="Select an existing client or type a new one"
               error={errorFor('clientName')}
               onChange={(v) => update('clientName', v, 'clientName')}
             />
@@ -324,7 +344,6 @@ function ProjectForm({ services }: { services: AppServices }) {
             <DropdownField
               fieldId="projectHealth"
               label="Project Health"
-              required
               disabled={readOnly}
               value={info.projectHealth}
               options={PROJECT_HEALTH_OPTIONS}
@@ -343,6 +362,58 @@ function ProjectForm({ services }: { services: AppServices }) {
             />
           </FormSection>
 
+          {/* Client Contact */}
+          <FormSection
+            title="Client Contact"
+            caption="Up to three client-side contacts and the sponsor"
+            glyph={<MailGlyph />}
+            tint="amber"
+          >
+            {isAdmin ? (
+              <>
+                <ClientContactsEditor
+                  value={info.clientContacts}
+                  disabled={readOnly}
+                  error={errorFor('clientContacts')}
+                  onChange={(contacts) => update('clientContacts', contacts, 'clientContacts')}
+                />
+                <FullWidthField>
+                  <TextField
+                    fieldId="clientSponsor"
+                    label="Client Sponsor"
+                    disabled={readOnly}
+                    value={info.clientSponsor ?? ''}
+                    maxLength={200}
+                    placeholder="Client-side sponsor name"
+                    error={errorFor('clientSponsor')}
+                    onChange={(v) => update('clientSponsor', v, 'clientSponsor')}
+                  />
+                </FullWidthField>
+              </>
+            ) : (
+              <FullWidthField>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '14px 16px',
+                    borderRadius: 10,
+                    border: '1px dashed var(--pi-neutral-swatch)',
+                    color: 'var(--pi-neutral-swatch)',
+                  }}
+                >
+                  <span aria-hidden style={{ fontSize: 16 }}>
+                    🔒
+                  </span>
+                  <span>Client contact details are visible to project administrators only.</span>
+                </div>
+              </FullWidthField>
+            )}
+          </FormSection>
+        </Column>
+
+        <Column>
           {/* Project Ownership */}
           <FormSection
             title="Project Ownership"
@@ -362,7 +433,6 @@ function ProjectForm({ services }: { services: AppServices }) {
             <PersonPicker
               fieldId="deliveryManager"
               label="Delivery Manager"
-              required
               disabled={readOnly}
               identityService={services.identities}
               value={info.deliveryManager}
@@ -389,31 +459,19 @@ function ProjectForm({ services }: { services: AppServices }) {
             />
           </FormSection>
 
-          {/* Client Contact */}
+          {/* Project Team */}
           <FormSection
-            title="Client Contact"
-            caption="Primary point of contact"
-            glyph={<MailGlyph />}
-            tint="amber"
+            title="Project Team"
+            caption="Add the people working on this project and their roles"
+            glyph={<TeamGlyph />}
+            tint="violet"
           >
-            <TextField
-              fieldId="clientContactName"
-              label="Client Contact Name"
+            <ProjectTeam
+              value={info.team}
               disabled={readOnly}
-              value={info.clientContactName ?? ''}
-              maxLength={FieldLimits.ClientContactName}
-              error={errorFor('clientContactName')}
-              onChange={(v) => update('clientContactName', v, 'clientContactName')}
-            />
-            <TextField
-              fieldId="clientContactEmail"
-              label="Client Contact Email"
-              type="email"
-              disabled={readOnly}
-              value={info.clientContactEmail ?? ''}
-              maxLength={FieldLimits.ClientContactEmail}
-              error={errorFor('clientContactEmail')}
-              onChange={(v) => update('clientContactEmail', v, 'clientContactEmail')}
+              identityService={services.identities}
+              error={errorFor('team')}
+              onChange={(team) => update('team', team, 'team')}
             />
           </FormSection>
         </Column>
@@ -429,7 +487,6 @@ function ProjectForm({ services }: { services: AppServices }) {
             <DateField
               fieldId="projectStartDate"
               label="Project Start Date"
-              required
               disabled={readOnly}
               value={info.projectStartDate}
               error={errorFor('projectStartDate')}
@@ -526,7 +583,7 @@ function ProjectForm({ services }: { services: AppServices }) {
             </FullWidthField>
           </FormSection>
         </Column>
-      </Columns>
+      </Sections>
 
       <Divider />
       <Text size={200} className={styles.subtle} style={{ display: 'block', marginTop: 12 }}>
@@ -535,34 +592,37 @@ function ProjectForm({ services }: { services: AppServices }) {
               info.lastUpdatedBy ? ` by ${info.lastUpdatedBy.displayName}` : ''
             }.`
           : 'This project has no saved information yet.'}
+        {` · Extension v${getExtensionVersion()}`}
       </Text>
 
-      {!readOnly && (
-        <div className={styles.footer}>
-          <Button
-            appearance="primary"
-            icon={saving ? <Spinner size="tiny" /> : <SaveRegular />}
-            disabled={!canSave}
-            onClick={() => void handleSave()}
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
-          <Button
-            appearance="secondary"
-            icon={<ArrowUndoRegular />}
-            disabled={!isDirty || saving}
-            onClick={() => {
-              resetChanges();
-              setTouched(new Set());
-              clearSaveStatus();
-            }}
-          >
-            Reset changes
-          </Button>
-          <div className={styles.spacer} />
-          {isDirty && <Text className={styles.subtle}>Unsaved changes</Text>}
-        </div>
-      )}
+      <div className={styles.footer}>
+        <Button
+          appearance="primary"
+          icon={saving ? <Spinner size="tiny" /> : <SaveRegular />}
+          disabled={!canSave}
+          onClick={() => void handleSave()}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+        <Button
+          appearance="secondary"
+          icon={<ArrowUndoRegular />}
+          disabled={readOnly || !isDirty || saving}
+          onClick={() => {
+            resetChanges();
+            setTouched(new Set());
+            clearSaveStatus();
+          }}
+        >
+          Reset changes
+        </Button>
+        <div className={styles.spacer} />
+        {readOnly ? (
+          <Text className={styles.subtle}>Read-only — project administrators can edit.</Text>
+        ) : (
+          isDirty && <Text className={styles.subtle}>Unsaved changes</Text>
+        )}
+      </div>
     </div>
   );
 }

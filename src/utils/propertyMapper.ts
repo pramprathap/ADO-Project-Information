@@ -61,6 +61,90 @@ function enumOrUndefined<T extends string>(
   return v && valid.has(v) ? (v as T) : undefined;
 }
 
+interface StoredTeamMember {
+  role?: unknown;
+  descriptor?: unknown;
+  displayName?: unknown;
+  email?: unknown;
+}
+
+/** Safely parse the JSON team property into validated team members. */
+function readTeam(raw: string): import('@/models/ProjectInformation').TeamMember[] {
+  if (!raw.trim()) {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  const members: import('@/models/ProjectInformation').TeamMember[] = [];
+  for (const entry of parsed as StoredTeamMember[]) {
+    const role = typeof entry?.role === 'string' ? entry.role.trim() : '';
+    const descriptor = typeof entry?.descriptor === 'string' ? entry.descriptor.trim() : '';
+    if (!role || !descriptor) {
+      continue; // skip malformed rows
+    }
+    const displayName =
+      typeof entry?.displayName === 'string' && entry.displayName.trim()
+        ? entry.displayName.trim()
+        : descriptor;
+    const email =
+      typeof entry?.email === 'string' && entry.email.trim() ? entry.email.trim() : undefined;
+    members.push({
+      role,
+      identity: email ? { descriptor, displayName, email } : { descriptor, displayName },
+    });
+  }
+  return members;
+}
+
+interface StoredClientContact {
+  name?: unknown;
+  email?: unknown;
+}
+
+/**
+ * Parse the JSON client-contacts property. Falls back to the legacy single
+ * name/email properties when the JSON list is absent (backward compatibility).
+ * Capped at MAX_CLIENT_CONTACTS.
+ */
+function readClientContacts(
+  raw: string,
+  legacyName: string | undefined,
+  legacyEmail: string | undefined,
+): import('@/models/ProjectInformation').ClientContact[] {
+  const max = 3;
+  const out: import('@/models/ProjectInformation').ClientContact[] = [];
+  if (raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed as StoredClientContact[]) {
+          const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+          const email = typeof entry?.email === 'string' ? entry.email.trim() : '';
+          if (name || email) {
+            out.push({ name, email });
+          }
+          if (out.length >= max) {
+            break;
+          }
+        }
+      }
+    } catch {
+      /* ignore malformed JSON */
+    }
+  }
+  if (out.length === 0 && (legacyName || legacyEmail)) {
+    out.push({ name: legacyName ?? '', email: legacyEmail ?? '' });
+  }
+  return out;
+}
+
 /** Read a person field's three properties into an identity, or null if unset. */
 function readIdentity(
   bag: PropertyBag,
@@ -152,8 +236,12 @@ export function fromProperties(bag: PropertyBag): ProjectInformation {
   );
   info.purchaseOrderNumber = optionalStr(bag, PropertyKeys.PurchaseOrderNumber) ?? '';
 
-  info.clientContactName = optionalStr(bag, PropertyKeys.ClientContactName) ?? '';
-  info.clientContactEmail = optionalStr(bag, PropertyKeys.ClientContactEmail) ?? '';
+  info.clientContacts = readClientContacts(
+    str(bag, PropertyKeys.ClientContacts),
+    optionalStr(bag, PropertyKeys.ClientContactName),
+    optionalStr(bag, PropertyKeys.ClientContactEmail),
+  );
+  info.clientSponsor = optionalStr(bag, PropertyKeys.ClientSponsor) ?? '';
   info.clientRegion =
     enumOrUndefined<ClientRegion>(bag, PropertyKeys.ClientRegion, VALID_CLIENT_REGION) ?? '';
   info.internalSponsor = readIdentity(
@@ -162,6 +250,8 @@ export function fromProperties(bag: PropertyBag): ProjectInformation {
     PropertyKeys.InternalSponsorDisplayName,
     PropertyKeys.InternalSponsorEmail,
   );
+
+  info.team = readTeam(str(bag, PropertyKeys.ProjectTeam));
 
   info.technologyStack = optionalStr(bag, PropertyKeys.TechnologyStack) ?? '';
   info.repositorySource = enumOrUndefined<RepositorySource>(
@@ -264,8 +354,16 @@ export function toPropertyBag(info: ProjectInformation): PropertyBag {
   put(PropertyKeys.ContractType, info.contractType);
   put(PropertyKeys.PurchaseOrderNumber, info.purchaseOrderNumber);
 
-  put(PropertyKeys.ClientContactName, info.clientContactName);
-  put(PropertyKeys.ClientContactEmail, info.clientContactEmail);
+  const contacts = (info.clientContacts ?? [])
+    .map((c) => ({ name: c.name.trim(), email: c.email.trim() }))
+    .filter((c) => c.name || c.email)
+    .slice(0, 3);
+  if (contacts.length > 0) {
+    bag[PropertyKeys.ClientContacts] = JSON.stringify(contacts);
+  }
+  // Legacy single-contact keys are intentionally not emitted; the diff removes
+  // them once data has migrated into ClientContacts.
+  put(PropertyKeys.ClientSponsor, info.clientSponsor);
   put(PropertyKeys.ClientRegion, info.clientRegion || undefined);
   putIdentity(
     info.internalSponsor,
@@ -273,6 +371,18 @@ export function toPropertyBag(info: ProjectInformation): PropertyBag {
     PropertyKeys.InternalSponsorDisplayName,
     PropertyKeys.InternalSponsorEmail,
   );
+
+  const teamRows = (info.team ?? [])
+    .filter((m) => m.role.trim() && m.identity && m.identity.descriptor)
+    .map((m) => ({
+      role: m.role.trim(),
+      descriptor: (m.identity as AzureDevOpsIdentity).descriptor,
+      displayName: (m.identity as AzureDevOpsIdentity).displayName,
+      email: (m.identity as AzureDevOpsIdentity).email,
+    }));
+  if (teamRows.length > 0) {
+    bag[PropertyKeys.ProjectTeam] = JSON.stringify(teamRows);
+  }
 
   put(PropertyKeys.TechnologyStack, info.technologyStack);
   put(PropertyKeys.RepositorySource, info.repositorySource);

@@ -31,6 +31,11 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       input: resolve(__dirname, 'src/project-information.html'),
+      output: {
+        // Inline dynamic import() chunks into the single bundle so there is no
+        // separate chunk to fetch at runtime (the extension ships one HTML file).
+        inlineDynamicImports: true,
+      },
     },
   },
   plugins: [react(), viteSingleFile()],

@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "veelead-project-information",
   "publisher": "PRamprathap",
-  "version": "1.0.6",
+  "version": "1.0.20",
   "name": "Project Information",
   "description": "Maintain structured, project-scoped information under Project Settings. Data is stored per project using the official Azure DevOps project-properties API.",
   "public": false,

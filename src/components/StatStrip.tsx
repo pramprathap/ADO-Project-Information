@@ -81,7 +81,13 @@ export function StatStrip({ info }: { info: ProjectInformation }) {
         <span className={styles.v}>{label(PROJECT_STATUS_OPTIONS, info.projectStatus)}</span>
       </Tile>
 
-      <Tile icon={<CheckShieldGlyph />} k="Health" iconClass={styles.icGood}>
+      <Tile
+        icon={<CheckShieldGlyph />}
+        k="Health"
+        iconClass={styles.icGood}
+        background={hs?.bg}
+        borderColor={hs ? hs.fg : undefined}
+      >
         {hs ? (
           <span className={styles.pill} style={{ backgroundColor: hs.bg, color: hs.fg }}>
             <span className={styles.pdot} />
@@ -134,15 +140,19 @@ export function StatStrip({ info }: { info: ProjectInformation }) {
     icon,
     k,
     iconClass,
+    background,
+    borderColor,
     children,
   }: {
     icon: ReactNode;
     k: string;
     iconClass?: string;
+    background?: string;
+    borderColor?: string;
     children: ReactNode;
   }) {
     return (
-      <div className={styles.stat}>
+      <div className={styles.stat} style={background ? { background, borderColor } : undefined}>
         <div className={`${styles.ic} ${iconClass ?? ''}`}>{icon}</div>
         <div>
           <span className={styles.k}>{k}</span>

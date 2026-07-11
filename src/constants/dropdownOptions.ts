@@ -116,6 +116,25 @@ export const VALID_PROJECT_HEALTH = new Set(PROJECT_HEALTH_OPTIONS.map((o) => o.
 export const VALID_PROJECT_PHASE = new Set(PROJECT_PHASE_OPTIONS.map((o) => o.value));
 export const VALID_BILLING_TYPE = new Set(BILLING_TYPE_OPTIONS.map((o) => o.value));
 export const VALID_CONTRACT_TYPE = new Set(CONTRACT_TYPE_OPTIONS.map((o) => o.value));
+/**
+ * Suggested project-team roles. Stored as the string value; "Other" lets teams
+ * capture a role not in the list.
+ */
+export const TEAM_ROLE_OPTIONS: DropdownOption<string>[] = [
+  { value: 'Project Lead', label: 'Project Lead' },
+  { value: 'Delivery Manager', label: 'Delivery Manager' },
+  { value: 'Technical Lead', label: 'Technical Lead' },
+  { value: 'Architect', label: 'Architect' },
+  { value: 'Business Analyst', label: 'Business Analyst' },
+  { value: 'UI/UX Designer', label: 'UI/UX Designer' },
+  { value: 'Developer', label: 'Developer' },
+  { value: 'QA/QC', label: 'QA/QC Team' },
+  { value: 'DevOps', label: 'DevOps Engineer' },
+  { value: 'Support', label: 'Support' },
+  { value: 'Internal Sponsor', label: 'Internal Sponsor' },
+  { value: 'Other', label: 'Other' },
+];
+
 export const VALID_HOSTING_MODEL = new Set(HOSTING_MODEL_OPTIONS.map((o) => o.value));
 export const VALID_REPOSITORY_SOURCE = new Set(REPOSITORY_SOURCE_OPTIONS.map((o) => o.value));
 export const VALID_CLIENT_REGION = new Set(CLIENT_REGION_OPTIONS.map((o) => o.value));

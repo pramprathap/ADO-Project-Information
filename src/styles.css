@@ -94,6 +94,23 @@ body {
   min-height: 100vh;
 }
 
+/*
+ * Fluent's Dropdown and Combobox default to min-width: 250px. Inside our
+ * responsive columns/cells that are narrower than that, the control overflows
+ * its cell and visually overlaps the neighbouring field's label. Allow them to
+ * shrink to the width of their container instead. This is the root fix for the
+ * field-overlap issue.
+ */
+.fui-Dropdown,
+.fui-Combobox,
+.fui-Input,
+.fui-Textarea {
+  min-width: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     scroll-behavior: auto !important;

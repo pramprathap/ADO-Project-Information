@@ -34,25 +34,30 @@ export function useAdoTheme(): Theme {
   useEffect(() => {
     const update = (): void => setDetected(detectTheme());
 
-    const observer = new MutationObserver(update);
-    observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: ['style', 'class', 'data-theme'],
-    });
-    observer.observe(document.documentElement, {
+    // SDK.applyTheme injects a <style> element into <head> during init and on
+    // theme changes, and fires a `themeChanged` window event. Watch all of
+    // these plus re-check shortly after mount (init resolves asynchronously).
+    window.addEventListener('themeChanged', update);
+
+    const headObserver = new MutationObserver(update);
+    headObserver.observe(document.head, { childList: true });
+    const rootObserver = new MutationObserver(update);
+    rootObserver.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ['style', 'class', 'data-theme'],
     });
 
     const contrastQuery = window.matchMedia('(forced-colors: active)');
-    const schemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
     contrastQuery.addEventListener('change', update);
-    schemeQuery.addEventListener('change', update);
+
+    const timers = [setTimeout(update, 150), setTimeout(update, 600), setTimeout(update, 1500)];
 
     return () => {
-      observer.disconnect();
+      window.removeEventListener('themeChanged', update);
+      headObserver.disconnect();
+      rootObserver.disconnect();
       contrastQuery.removeEventListener('change', update);
-      schemeQuery.removeEventListener('change', update);
+      timers.forEach(clearTimeout);
     };
   }, []);
 
@@ -63,27 +68,33 @@ function detectTheme(): DetectedTheme {
   if (typeof window !== 'undefined' && window.matchMedia('(forced-colors: active)').matches) {
     return { theme: teamsHighContrastTheme, appearance: 'contrast' };
   }
-  return isDarkBackground()
+  return isDarkTheme()
     ? { theme: webDarkTheme, appearance: 'dark' }
     : { theme: webLightTheme, appearance: 'light' };
 }
 
 /**
- * Determine whether the current background is dark. Prefers the ADO
- * `--background-color` custom property; falls back to the computed body
- * background, then to the OS colour-scheme preference.
+ * Determine whether the Azure DevOps theme is dark.
+ *
+ * The most reliable signal is the body text colour: SDK.applyTheme sets
+ * `body { color: var(--text-primary-color) }`, so light text implies a dark
+ * theme and dark text implies a light theme. We fall back to the injected
+ * `--background-color` custom property, then to the OS colour-scheme preference.
  */
-function isDarkBackground(): boolean {
+function isDarkTheme(): boolean {
   if (typeof window === 'undefined') {
     return false;
   }
-  const styles = getComputedStyle(document.body);
-  const candidates = [
-    styles.getPropertyValue('--background-color'),
-    styles.backgroundColor,
+  const textLuminance = relativeLuminance(getComputedStyle(document.body).color);
+  if (textLuminance !== null) {
+    return textLuminance > 0.5;
+  }
+  const bgCandidates = [
     getComputedStyle(document.documentElement).getPropertyValue('--background-color'),
+    getComputedStyle(document.body).getPropertyValue('--background-color'),
+    getComputedStyle(document.body).backgroundColor,
   ];
-  for (const raw of candidates) {
+  for (const raw of bgCandidates) {
     const luminance = relativeLuminance(raw);
     if (luminance !== null) {
       return luminance < 0.5;
@@ -101,8 +112,13 @@ function relativeLuminance(color: string): number | null {
   let r: number, g: number, b: number;
   const rgbMatch = value.match(/rgba?\(([^)]+)\)/i);
   if (rgbMatch) {
-    const parts = rgbMatch[1].split(',').map((p) => parseFloat(p));
+    const parts = rgbMatch[1].split(/[,/\s]+/).map((p) => parseFloat(p));
     [r, g, b] = parts;
+    // A fully transparent colour carries no theme signal — treat as unknown so
+    // the caller falls through to a more reliable source.
+    if (parts.length >= 4 && parts[3] === 0) {
+      return null;
+    }
   } else if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)) {
     const hex = value.slice(1);
     const full =

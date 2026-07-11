@@ -305,4 +305,5 @@ npm run icons            # Regenerate the extension icon
 - URLs are validated (HTTPS only for links) to prevent `javascript:` / `data:`
   injection; user-controlled values are rendered via React (escaped).
 - Minimum scopes; dependencies bundled (no runtime CDN); no `eval`.
+
 # ADO-Project-Information

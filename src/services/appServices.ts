@@ -1,4 +1,5 @@
 import { AzureDevOpsClient } from './AzureDevOpsClient';
+import { ClientDirectoryService } from './ClientDirectoryService';
 import { IdentityService } from './IdentityService';
 import { PermissionService } from './PermissionService';
 import { ProjectPropertiesService } from './ProjectPropertiesService';
@@ -13,6 +14,7 @@ export interface AppServices {
   properties: ProjectPropertiesService;
   identities: IdentityService;
   permissions: PermissionService;
+  clientDirectory: ClientDirectoryService;
 }
 
 export async function createAppServices(): Promise<AppServices> {
@@ -22,7 +24,8 @@ export async function createAppServices(): Promise<AppServices> {
   return {
     context,
     properties: new ProjectPropertiesService(client, context.coreBaseUrl, context.project.id),
-    identities: new IdentityService(client, context.coreBaseUrl, context.graphBaseUrl),
-    permissions: new PermissionService(client, context.coreBaseUrl, context.project.id),
+    identities: new IdentityService(),
+    permissions: new PermissionService(context.currentUser.descriptor, context.project.id),
+    clientDirectory: new ClientDirectoryService(),
   };
 }

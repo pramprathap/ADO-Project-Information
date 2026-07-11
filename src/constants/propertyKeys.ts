@@ -52,6 +52,10 @@ export const PropertyKeys = {
   PurchaseOrderNumber: 'Veelead.ProjectInformation.PurchaseOrderNumber',
 
   // F. Client Information
+  /** Client contacts stored as a JSON array of { name, email } (max 3). */
+  ClientContacts: 'Veelead.ProjectInformation.ClientContacts',
+  ClientSponsor: 'Veelead.ProjectInformation.ClientSponsor',
+  /** Legacy single-contact keys (migrated into ClientContacts, then removed). */
   ClientContactName: 'Veelead.ProjectInformation.ClientContactName',
   ClientContactEmail: 'Veelead.ProjectInformation.ClientContactEmail',
   ClientRegion: 'Veelead.ProjectInformation.ClientRegion',
@@ -59,6 +63,9 @@ export const PropertyKeys = {
   InternalSponsorDescriptor: 'Veelead.ProjectInformation.InternalSponsor.Descriptor',
   InternalSponsorDisplayName: 'Veelead.ProjectInformation.InternalSponsor.DisplayName',
   InternalSponsorEmail: 'Veelead.ProjectInformation.InternalSponsor.Email',
+
+  /** Project team stored as a JSON array of { role, descriptor, displayName, email }. */
+  ProjectTeam: 'Veelead.ProjectInformation.ProjectTeam',
 
   // G. Technical Information
   TechnologyStack: 'Veelead.ProjectInformation.TechnologyStack',
