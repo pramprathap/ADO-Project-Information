@@ -3,6 +3,7 @@ import { ClientDirectoryService } from './ClientDirectoryService';
 import { IdentityService } from './IdentityService';
 import { PermissionService } from './PermissionService';
 import { ProjectPropertiesService } from './ProjectPropertiesService';
+import { WorkItemService } from './WorkItemService';
 import { SdkContext } from './sdkContext';
 
 /**
@@ -15,17 +16,30 @@ export interface AppServices {
   identities: IdentityService;
   permissions: PermissionService;
   clientDirectory: ClientDirectoryService;
+  workItems: WorkItemService;
 }
 
-export async function createAppServices(): Promise<AppServices> {
-  const context = await SdkContext.resolve();
-  const client = new AzureDevOpsClient();
-
+/** Wire the services for a resolved {@link SdkContext} (reused per project). */
+export function appServicesFromContext(
+  context: SdkContext,
+  client: AzureDevOpsClient = new AzureDevOpsClient(),
+): AppServices {
   return {
     context,
     properties: new ProjectPropertiesService(client, context.coreBaseUrl, context.project.id),
     identities: new IdentityService(),
     permissions: new PermissionService(context.currentUser.descriptor, context.project.id),
     clientDirectory: new ClientDirectoryService(),
+    workItems: new WorkItemService(
+      client,
+      context.coreBaseUrl,
+      context.project.id,
+      context.analyticsBaseUrl,
+    ),
   };
+}
+
+export async function createAppServices(): Promise<AppServices> {
+  const context = await SdkContext.resolve();
+  return appServicesFromContext(context);
 }

@@ -26,6 +26,10 @@ import { StatStrip } from '@/components/StatStrip';
 import { Column, FormSection, FullWidthField, Sections } from '@/components/FormSection';
 import { ProjectTeam } from '@/components/ProjectTeam';
 import { ClientContactsEditor } from '@/components/ClientContactsEditor';
+import { ProjectHealthPage } from '@/components/health/ProjectHealthPage';
+import { OrganizationHealthPage } from '@/components/health/OrganizationHealthPage';
+import { OverviewPage } from '@/components/portfolio/OverviewPage';
+import { ResourceAllocationPage } from '@/components/portfolio/ResourceAllocationPage';
 import {
   DateField,
   DropdownField,
@@ -75,8 +79,6 @@ const useStyles = makeStyles({
     marginBottom: tokens.spacingVerticalM,
   },
   footer: {
-    position: 'sticky',
-    bottom: tokens.spacingVerticalM,
     display: 'flex',
     alignItems: 'center',
     gap: tokens.spacingHorizontalM,
@@ -104,12 +106,95 @@ function getExtensionVersion(): string {
   }
 }
 
+/**
+ * Which page to render. Both the "Project Information" and "Project Health"
+ * hubs load this same bundle; the active contribution id decides the page. In
+ * local preview, `?page=health` selects the report.
+ */
+type ActivePage = 'info' | 'health' | 'org' | 'overview' | 'resource';
+
+function pageFromContributionId(id: string): ActivePage {
+  if (id.endsWith('organization-overview-hub')) return 'overview';
+  if (id.endsWith('organization-resource-hub')) return 'resource';
+  if (id.endsWith('organization-health-hub')) return 'org';
+  return id.endsWith('project-health-hub') ? 'health' : 'info';
+}
+
+/**
+ * Resolve which page to render. The contribution id is only available after the
+ * SDK handshake, so this waits for SDK.ready() before deciding — otherwise an
+ * org-level hub would briefly (and wrongly) bootstrap the project-scoped page
+ * and fail with "No project context". SDK.init is idempotent; the page
+ * components' own init/ready calls resolve immediately afterwards.
+ */
+function usePage(): ActivePage | null {
+  const [page, setPage] = useState<ActivePage | null>(null);
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      const p = new URLSearchParams(window.location.search).get('page');
+      setPage(
+        p === 'health' || p === 'org' || p === 'overview' || p === 'resource' ? p : 'info',
+      );
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        await SDK.init({ loaded: false, applyTheme: true });
+        await SDK.ready();
+        if (!cancelled) setPage(pageFromContributionId(SDK.getContributionId() ?? ''));
+      } catch (err) {
+        console.error('Failed to resolve the active page.', err);
+        if (!cancelled) setPage('info');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return page;
+}
+
 export function App() {
   const theme = useAdoTheme();
-  const { status, services, error, retry } = useProjectContext();
+  const page = usePage();
 
   return (
     <FluentProvider theme={theme} style={{ backgroundColor: 'transparent' }}>
+      {page === null ? (
+        <LoadingState label="Initializing…" />
+      ) : page === 'overview' ? (
+        <OverviewPage />
+      ) : page === 'resource' ? (
+        <ResourceAllocationPage />
+      ) : page === 'org' ? (
+        <OrganizationHealthPage />
+      ) : (
+        <ProjectApp page={page === 'health' ? 'health' : 'info'} />
+      )}
+    </FluentProvider>
+  );
+}
+
+/** Project-scoped bootstrap (Project Information + Project Health hubs). */
+function ProjectApp({ page }: { page: 'info' | 'health' }) {
+  const { status, services, error, retry } = useProjectContext();
+  const notified = useRef(false);
+
+  // Tell the host the page has loaded as soon as the context is ready. Without
+  // this the host keeps its loading overlay on top of our content ("taking
+  // longer than expected"). Skipped in local preview where the SDK is absent.
+  useEffect(() => {
+    if (!notified.current && status !== 'initializing') {
+      notified.current = true;
+      if (!import.meta.env.DEV) {
+        void SDK.notifyLoadSucceeded();
+      }
+    }
+  }, [status]);
+
+  return (
+    <>
       {status === 'initializing' && <LoadingState label="Initializing…" />}
       {status === 'error' && (
         <ErrorState
@@ -118,8 +203,14 @@ export function App() {
           onRetry={retry}
         />
       )}
-      {status === 'ready' && services && <ProjectForm services={services} />}
-    </FluentProvider>
+      {status === 'ready' &&
+        services &&
+        (page === 'health' ? (
+          <ProjectHealthPage services={services} />
+        ) : (
+          <ProjectForm services={services} />
+        ))}
+    </>
   );
 }
 
@@ -142,21 +233,8 @@ function ProjectForm({ services }: { services: AppServices }) {
   } = useProjectInformation(services);
 
   const [touched, setTouched] = useState<Set<ValidationField>>(new Set());
-  const notified = useRef(false);
 
   useUnsavedChanges(isDirty && isAdmin);
-
-  // Notify the host exactly once the page has finished its initial load
-  // (successfully rendered content, whether data loaded or a retryable error).
-  useEffect(() => {
-    if (!notified.current && loadStatus !== 'loading') {
-      notified.current = true;
-      // In local preview mode the SDK is not initialized; skip the host notify.
-      if (!import.meta.env.DEV) {
-        void SDK.notifyLoadSucceeded();
-      }
-    }
-  }, [loadStatus]);
 
   const validation = useMemo(() => validateProjectInformation(info), [info]);
   // Only Project Administrators may edit. Non-admins get a fully read-only form

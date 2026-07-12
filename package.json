@@ -26,6 +26,7 @@
     "package": "npm run prepackage && node scripts/package.mjs"
   },
   "dependencies": {
+    "@azure/msal-browser": "^3.30.0",
     "@fluentui/react-components": "^9.54.17",
     "@fluentui/react-icons": "^2.0.245",
     "azure-devops-extension-api": "^5.274.0",
