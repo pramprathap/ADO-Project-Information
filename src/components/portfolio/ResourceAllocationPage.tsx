@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import * as SDK from 'azure-devops-extension-sdk';
 import { ErrorState } from '@/components/ErrorState';
-import { listProjects, resolveOrgContext, type OrgContext, type ProjectRef } from '@/services/orgServices';
+import { listActiveProjects, resolveOrgContext, type OrgContext, type ProjectRef } from '@/services/orgServices';
 import {
   HOURS_PER_DAY,
   loadResourceData,
@@ -16,6 +16,14 @@ import {
 import { MOCK_RESOURCE_DATA } from '@/services/mockResource';
 import { GraphLeaveProvider, GraphTimesheetProvider } from '@/services/sharePointProviders';
 import { getGraphTokenInteractive, isSharePointConfigured } from '@/services/graphClient';
+import { ProgressLoader } from './ProgressLoader';
+import { MultiSelect } from './MultiSelect';
+import { useVlDark, vlCanvasClass } from './vlTheme';
+import { ProjectHealthPage } from '@/components/health/ProjectHealthPage';
+import { buildProjectServices } from '@/services/orgServices';
+import { createMockAppServices } from '@/services/mockServices';
+import type { AppServices } from '@/services/appServices';
+import type { AllocItem } from '@/services/resourceService';
 
 const C = {
   navy: '#323F7C',
@@ -26,12 +34,12 @@ const C = {
   amber: '#ED9B00',
   amberText: '#C25E00',
   indigoMid: '#7d8ad6',
-  ink: '#252423',
-  sub: '#605e5c',
-  faint: '#a19f9d',
-  line: '#ececf1',
-  line2: '#f3f2f1',
-  pageBg: '#eef0f4',
+  ink: 'var(--vl-ink)',
+  sub: 'var(--vl-sub)',
+  faint: 'var(--vl-faint)',
+  line: 'var(--vl-line)',
+  line2: 'var(--vl-line2)',
+  pageBg: 'var(--vl-page)',
 };
 
 /** Project palette used by the per-day split bars (matches the prototype). */
@@ -46,56 +54,6 @@ function bandColor(v: number): string {
 /** Roll-up navy scale (prototype `colf`). */
 function navyScale(v: number): string {
   return v >= 28 ? '#323F7C' : v >= 16 ? '#5566b0' : v >= 7 ? '#9aa6d8' : '#d7dcf0';
-}
-
-// ------------------------------------------------------------------ animated loader
-function ensureKeyframes(): void {
-  if (document.getElementById('vl-progress-kf')) return;
-  const style = document.createElement('style');
-  style.id = 'vl-progress-kf';
-  style.textContent = `
-@keyframes vlStripes { from { background-position: 0 0; } to { background-position: 28px 0; } }
-@keyframes vlPulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
-`;
-  document.head.appendChild(style);
-}
-
-function ProgressLoader({ done, total, label }: { done: number; total: number; label: string }) {
-  useEffect(ensureKeyframes, []);
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  return (
-    <div style={{ minHeight: 320, display: 'grid', placeItems: 'center', background: C.pageBg, fontFamily: '"Segoe UI","Open Sans",system-ui,sans-serif' }}>
-      <div style={{ background: '#fff', border: `1px solid ${C.line}`, borderRadius: 12, boxShadow: '0 4px 18px rgba(16,24,64,.10)', padding: '26px 30px', width: 420, maxWidth: '86vw' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-          <span style={{ font: '700 14px "Open Sans",sans-serif', color: C.navy }}>{label}</span>
-          <span style={{ font: '800 16px "Open Sans",sans-serif', color: C.orange }}>{pct}%</span>
-        </div>
-        <div style={{ fontSize: 11, color: C.sub, marginBottom: 12, animation: 'vlPulse 1.6s ease-in-out infinite' }}>
-          {total > 0 ? `Scanning project ${Math.min(done + 1, total)} of ${total}…` : 'Connecting to Azure DevOps…'}
-        </div>
-        <div style={{ height: 12, borderRadius: 999, background: '#eef0f6', overflow: 'hidden' }}>
-          <div
-            style={{
-              height: '100%',
-              width: `${Math.max(4, pct)}%`,
-              borderRadius: 999,
-              transition: 'width .35s ease',
-              backgroundImage: `linear-gradient(90deg, ${C.navy}, ${C.orange}), linear-gradient(45deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%, transparent)`,
-              backgroundBlendMode: 'overlay',
-              backgroundSize: '100% 100%, 28px 28px',
-              animation: 'vlStripes .7s linear infinite',
-            }}
-          />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 10, color: C.faint }}>
-          <span>Azure Boards · live data</span>
-          <span>
-            {done}/{total || '…'} projects
-          </span>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 // ------------------------------------------------------------------ page
@@ -115,6 +73,7 @@ export function ResourceAllocationPage() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [spNeedsAuth, setSpNeedsAuth] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const [drill, setDrill] = useState<ProjectRef | null>(null);
   const notified = useRef(false);
   const loginHintRef = useRef<string | undefined>(undefined);
 
@@ -133,7 +92,9 @@ export function ResourceAllocationPage() {
         await SDK.ready();
         loginHintRef.current = SDK.getUser()?.name;
         const resolved = await resolveOrgContext();
-        const list = await listProjects(resolved);
+        const list = await listActiveProjects(resolved, (done, total) => {
+          if (!cancelled) setProgress({ done, total });
+        });
         if (!cancelled) {
           setOrg(resolved);
           setProjects(list);
@@ -212,6 +173,39 @@ export function ResourceAllocationPage() {
     }
   };
 
+  // Drill into a project's full health report (from a split-bar segment click).
+  const openProject = (name: string): void => {
+    if (import.meta.env.DEV) {
+      setDrill({ id: 'preview', name });
+      return;
+    }
+    const p = projects.find((x) => x.name === name);
+    if (p) setDrill(p);
+  };
+
+  if (drill) {
+    const services: AppServices = import.meta.env.DEV
+      ? createMockAppServices()
+      : buildProjectServices(org!, drill);
+    return (
+      <div className={vlCanvasClass(document.documentElement.getAttribute('data-appearance') === 'dark')} style={{ minHeight: '100vh' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--vl-card)', borderBottom: '1px solid var(--vl-line)', padding: '10px 18px', fontFamily: '"Segoe UI","Open Sans",system-ui,sans-serif' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <span onClick={() => setDrill(null)} style={{ color: C.sub, cursor: 'pointer' }}>Resource Allocation</span>
+            <span style={{ color: 'var(--vl-borderStrong)' }}>›</span>
+            <span style={{ color: 'var(--vl-brandText)', fontWeight: 700 }}>Project Health</span>
+            <span style={{ color: 'var(--vl-borderStrong)' }}>›</span>
+            <span style={{ color: C.orange, fontWeight: 700 }}>{drill.name}</span>
+          </div>
+          <div onClick={() => setDrill(null)} style={{ cursor: 'pointer', fontSize: 12, color: 'var(--vl-brandText)', border: '1px solid var(--vl-borderStrong)', borderRadius: 4, padding: '5px 11px', fontWeight: 600 }}>
+            ‹ Back to Resource Allocation
+          </div>
+        </div>
+        <ProjectHealthPage key={drill.name} services={services} />
+      </div>
+    );
+  }
+
   return (
     <ResourceBody
       data={data}
@@ -225,6 +219,7 @@ export function ResourceAllocationPage() {
       onYearSel={setYearSel}
       spNeedsAuth={spNeedsAuth}
       onConnectSharePoint={() => void connectSharePoint()}
+      onOpenProject={openProject}
     />
   );
 }
@@ -242,6 +237,7 @@ function ResourceBody({
   onYearSel,
   spNeedsAuth,
   onConnectSharePoint,
+  onOpenProject,
 }: {
   data: ResourceData;
   mode: PeriodMode;
@@ -254,9 +250,12 @@ function ResourceBody({
   onYearSel: (y: number) => void;
   spNeedsAuth: boolean;
   onConnectSharePoint: () => void;
+  onOpenProject: (name: string) => void;
 }) {
+  const dark = useVlDark();
   const [resSel, setResSel] = useState<string[]>([]);
   const [dayIdx, setDayIdx] = useState(0);
+  const [breakdown, setBreakdown] = useState<{ person: string; colIdx: number | null } | null>(null);
 
   const period = data.period;
   const isCurrent = mode === 'current';
@@ -291,14 +290,14 @@ function ResourceBody({
   const safeDayIdx = Math.min(dayIdx, subCols.length - 1);
 
   return (
-    <div style={{ background: C.pageBg, color: C.ink, fontFamily: '"Segoe UI","Open Sans",system-ui,sans-serif', padding: '14px clamp(12px,2vw,28px) 40px', minHeight: '100%' }}>
+    <div className={vlCanvasClass(dark)} style={{ background: C.pageBg, color: C.ink, fontFamily: '"Segoe UI","Open Sans",system-ui,sans-serif', padding: '14px clamp(12px,2vw,28px) 40px', minHeight: '100vh' }}>
       {/* ---- header: title + period pills + selects + multi-select ---- */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
-        <div style={{ font: '700 16px "Open Sans",sans-serif', color: C.navy }}>
-          Resource Allocation <span style={{ fontWeight: 400, fontSize: 12, color: '#797775' }}>· leave-adjusted capacity · {capLabel}</span>
+        <div style={{ font: '700 16px "Open Sans",sans-serif', color: 'var(--vl-brandText)' }}>
+          Resource Allocation <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--vl-sub)' }}>· leave-adjusted capacity · {capLabel}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', border: '1px solid #c8c6c4', borderRadius: 6, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', border: '1px solid var(--vl-borderStrong)', borderRadius: 6, overflow: 'hidden' }}>
             {(
               [
                 ['current', 'Current week'],
@@ -309,7 +308,7 @@ function ResourceBody({
               <div
                 key={key}
                 onClick={() => onMode(key)}
-                style={{ padding: '7px 18px', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: mode === key ? C.orange : '#fff', color: mode === key ? '#fff' : C.sub, borderRight: '1px solid #e1dfdd' }}
+                style={{ padding: '7px 18px', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: mode === key ? C.orange : 'var(--vl-card)', color: mode === key ? '#fff' : C.sub, borderRight: '1px solid var(--vl-line)' }}
               >
                 {label}
               </div>
@@ -348,8 +347,8 @@ function ResourceBody({
 
       {/* ---- SharePoint connection banner ---- */}
       {spNeedsAuth && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', background: '#eef2fb', border: `1px solid ${C.navy}`, borderRadius: 8, padding: '10px 14px', marginBottom: 12 }}>
-          <span style={{ fontSize: 12, color: C.navy }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', background: 'var(--vl-navySoft)', border: `1px solid ${C.navy}`, borderRadius: 8, padding: '10px 14px', marginBottom: 12 }}>
+          <span style={{ fontSize: 12, color: 'var(--vl-brandText)' }}>
             <b>Connect SharePoint</b> to load Leave (LMS) and Timesheet data — one-time sign-in with your work account.
           </span>
           <div onClick={onConnectSharePoint} style={{ cursor: 'pointer', background: C.navy, color: '#fff', fontSize: 12, fontWeight: 700, borderRadius: 5, padding: '7px 16px' }}>
@@ -374,7 +373,7 @@ function ResourceBody({
 
       {/* ---- under-allocated (current week only) ---- */}
       {isCurrent && (
-        <div style={{ background: '#fff', border: '1px solid #cfe9d4', borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+        <div style={{ background: 'var(--vl-card)', border: '1px solid var(--vl-goodBorder)', borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <span style={{ font: '600 13px "Open Sans",sans-serif', color: C.greenSoft }}>
               Under-allocated resources — this week <span style={{ color: C.faint, fontWeight: 400 }}>· &lt;60% of capacity · available to take work</span>
@@ -384,13 +383,13 @@ function ResourceBody({
             </span>
           </div>
           {under.length === 0 ? (
-            <div style={{ padding: 14, textAlign: 'center', color: C.sub, fontSize: 12, background: '#faf9f8', borderRadius: 6 }}>No one is under 60% this week.</div>
+            <div style={{ padding: 14, textAlign: 'center', color: C.sub, fontSize: 12, background: 'var(--vl-soft)', borderRadius: 6 }}>No one is under 60% this week.</div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 10 }}>
               {under.map((u) => (
-                <div key={u.name} style={{ border: '1px solid #e1dfdd', borderRadius: 7, padding: '10px 12px', background: '#f7fbf8' }}>
+                <div key={u.name} style={{ border: '1px solid var(--vl-line)', borderRadius: 7, padding: '10px 12px', background: 'var(--vl-goodSoft)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#323130' }}>{u.name}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--vl-ink2)' }}>{u.name}</span>
                     <span style={{ fontSize: 13, fontWeight: 800, color: C.greenSoft }}>{u.utilPct}%</span>
                   </div>
                   <div style={{ fontSize: 10, color: C.faint, marginBottom: 7 }}>{u.role}</div>
@@ -411,7 +410,7 @@ function ResourceBody({
       <Card pad="12px 14px" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
           <span style={{ font: '600 13px "Open Sans",sans-serif' }}>Allocation vs capacity — resource × {colNoun}</span>
-          <span style={{ fontSize: 10, color: '#797775' }}>
+          <span style={{ fontSize: 10, color: 'var(--vl-sub)' }}>
             % of leave-adjusted capacity · <span style={{ color: C.green }}>■</span>&lt;60 <span style={{ color: C.indigoMid }}>■</span>60–90 <span style={{ color: C.orange }}>■</span>90–100 <span style={{ color: C.red }}>■</span>&gt;100
           </span>
         </div>
@@ -423,7 +422,7 @@ function ResourceBody({
             </div>
           ))}
           {people.flatMap((p) => [
-            <div key={`n${p.name}`} style={{ fontSize: 11, color: '#323130', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <div key={`n${p.name}`} style={{ fontSize: 11, color: 'var(--vl-ink2)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {p.name}
             </div>,
             ...period.cols.map((c, ci) => {
@@ -431,8 +430,9 @@ function ResourceBody({
               return (
                 <div
                   key={`${p.name}-${ci}`}
-                  title={`${p.name} ${c.label}: ${v}%`}
-                  style={{ height: 28, borderRadius: 3, background: bandColor(v), opacity: 0.45 + v / 200, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', fontWeight: 700 }}
+                  title={`${p.name} ${c.label}: ${v}% — click for the work items behind this`}
+                  onClick={() => setBreakdown({ person: p.name, colIdx: ci })}
+                  style={{ height: 28, borderRadius: 3, background: bandColor(v), opacity: 0.45 + v / 200, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', fontWeight: 700, cursor: 'pointer' }}
                 >
                   {v}%
                 </div>
@@ -446,14 +446,14 @@ function ResourceBody({
       <Card pad="12px 14px" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 6 }}>
           <span style={{ font: '600 13px "Open Sans",sans-serif' }}>Resource allocation by project — per {subNoun}</span>
-          <span style={{ fontSize: 10, color: '#797775' }}>pick a {subNoun} · each bar = a person, split by project · hover for exact %</span>
+          <span style={{ fontSize: 10, color: 'var(--vl-sub)' }}>pick a {subNoun} · each bar = a person, split by project · hover for exact %</span>
         </div>
-        <div style={{ display: 'flex', marginBottom: 14, border: '1px solid #c8c6c4', borderRadius: 6, overflow: 'hidden', width: 'fit-content', maxWidth: '100%', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', marginBottom: 14, border: '1px solid var(--vl-borderStrong)', borderRadius: 6, overflow: 'hidden', width: 'fit-content', maxWidth: '100%', flexWrap: 'wrap' }}>
           {subCols.map((c, i) => (
             <div
               key={c.label}
               onClick={() => setDayIdx(i)}
-              style={{ padding: '6px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: i === safeDayIdx ? C.orange : '#fff', color: i === safeDayIdx ? '#fff' : C.sub, borderRight: '1px solid #e1dfdd', whiteSpace: 'nowrap' }}
+              style={{ padding: '6px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: i === safeDayIdx ? C.orange : 'var(--vl-card)', color: i === safeDayIdx ? '#fff' : C.sub, borderRight: '1px solid var(--vl-line)', whiteSpace: 'nowrap' }}
             >
               {c.label}
             </div>
@@ -470,7 +470,7 @@ function ResourceBody({
             return (
               <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: ri < people.length - 1 ? `1px solid ${C.line2}` : 'none' }}>
                 <div style={{ width: 132, flexShrink: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: '#323130', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--vl-ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
                   <div style={{ fontSize: 10, color: C.faint }}>{p.role}</div>
                 </div>
                 <div style={{ flex: 1, display: 'flex', height: 22, borderRadius: 3, overflow: 'hidden', background: C.line2 }}>
@@ -478,13 +478,22 @@ function ResourceBody({
                     const pct = segTotal > 0 ? Math.round((s.hrs / segTotal) * 100) : 0;
                     const short = s.name.length > 16 ? `${s.name.slice(0, 15)}…` : s.name;
                     return (
-                      <div key={s.name} title={`${s.name}: ${s.hrs}h (${pct}%)`} style={{ width: `${pct}%`, background: projColor.get(s.name), display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                      <div
+                        key={s.name}
+                        title={`${s.name}: ${s.hrs}h (${pct}% of this ${subNoun}) — click to open the project's health`}
+                        onClick={() => onOpenProject(s.name)}
+                        style={{ width: `${pct}%`, background: projColor.get(s.name), display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', cursor: 'pointer' }}
+                      >
                         {pct >= 15 && <span style={{ fontSize: 9, color: '#fff', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 4px' }}>{short} {pct}%</span>}
                       </div>
                     );
                   })}
                 </div>
-                <div style={{ width: 52, flexShrink: 0, textAlign: 'right' }}>
+                <div
+                  style={{ width: 52, flexShrink: 0, textAlign: 'right', cursor: 'pointer' }}
+                  title="Click to see the work items behind this load"
+                  onClick={() => setBreakdown({ person: p.name, colIdx: safeDayIdx })}
+                >
                   <div style={{ fontSize: 13, fontWeight: 800, color: bandColor(v) }}>{v}%</div>
                   <div style={{ fontSize: 9, color: C.faint }}>load</div>
                 </div>
@@ -494,12 +503,86 @@ function ResourceBody({
         </div>
       </Card>
 
+      {/* ---- allocation breakdown: the work items behind a load % ---- */}
+      {breakdown &&
+        (() => {
+          const person = people.find((p) => p.name === breakdown.person);
+          if (!person) return null;
+          const col = breakdown.colIdx !== null ? period.cols[breakdown.colIdx] : null;
+          const label = col ? col.label : `whole ${mode === 'month' ? 'month' : 'week'}`;
+          const hrsOf = (it: AllocItem): number =>
+            col ? Math.round(col.idx.reduce((a, i) => a + (it.day[i] ?? 0), 0) * 10) / 10 : it.hrs;
+          const rows = person.items.filter((it) => hrsOf(it) > 0).sort((a, b) => hrsOf(b) - hrsOf(a));
+          const total = Math.round(rows.reduce((a, it) => a + hrsOf(it), 0) * 10) / 10;
+          const cap = col
+            ? Math.round((((person.capacityHrs - person.leaveHrs) / period.days.length) * col.idx.length) * 10) / 10
+            : person.capacityHrs - person.leaveHrs;
+          const pct = cap > 0 ? Math.round((total / cap) * 100) : 0;
+          const fmt = (d?: string): string => d ?? '—';
+          return (
+            <div style={{ background: 'var(--vl-card)', border: `1px solid ${C.navy}`, borderRadius: 8, overflow: 'hidden', marginBottom: 12 }}>
+              <div style={{ background: 'var(--vl-navySoft)', padding: '11px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ fontSize: 13 }}>
+                  <b style={{ color: 'var(--vl-brandText)', font: '700 14px "Open Sans",sans-serif' }}>{person.name}</b>
+                  <span style={{ color: C.sub, fontSize: 11 }}> · {label} · </span>
+                  <b style={{ color: bandColor(pct) }}>{total}h</b>
+                  <span style={{ color: C.sub, fontSize: 11 }}> allocated of {cap}h capacity = </span>
+                  <b style={{ color: bandColor(pct) }}>{pct}%</b>
+                </div>
+                <div onClick={() => setBreakdown(null)} style={{ cursor: 'pointer', fontSize: 11, color: C.sub, border: '1px solid var(--vl-borderStrong)', background: 'var(--vl-card)', borderRadius: 4, padding: '4px 10px' }}>
+                  ✕ Close
+                </div>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 860 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--vl-soft)', color: C.sub, textAlign: 'left' }}>
+                      <th style={{ ...th, padding: '7px 8px' }}>ID</th>
+                      <th style={{ ...th, padding: '7px 8px' }}>Type</th>
+                      <th style={th}>Title</th>
+                      <th style={{ ...th, padding: '7px 8px' }}>Project</th>
+                      <th style={{ ...th, padding: '7px 8px' }}>State</th>
+                      <th style={{ ...th, padding: '7px 8px' }}>Start</th>
+                      <th style={{ ...th, padding: '7px 8px' }}>Due</th>
+                      <th style={{ ...th, padding: '7px 8px', textAlign: 'right' }}>Hrs · {col ? 'this ' + subNoun : 'period'}</th>
+                      <th style={{ ...th, textAlign: 'right' }}>Hrs · period</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((it) => (
+                      <tr key={it.id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                        <td style={{ ...td, padding: '7px 8px', color: C.sub }}>{it.id}</td>
+                        <td style={{ ...td, padding: '7px 8px' }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: it.type === 'Bug' ? '#CC293D' : it.type === 'User Story' ? '#0a8fc2' : '#C9A227' }}>{it.type}</span>
+                        </td>
+                        <td style={{ ...td, fontWeight: 600, color: 'var(--vl-ink2)', maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.title}</td>
+                        <td style={{ ...td, padding: '7px 8px', color: C.sub, whiteSpace: 'nowrap' }}>
+                          <span onClick={() => onOpenProject(it.project)} style={{ cursor: 'pointer', color: 'var(--vl-brandText)', fontWeight: 600 }}>{it.project}</span>
+                        </td>
+                        <td style={{ ...td, padding: '7px 8px', color: C.sub }}>{it.state}</td>
+                        <td style={{ ...td, padding: '7px 8px', color: it.startDate ? C.sub : '#B3261E' }}>{fmt(it.startDate)}</td>
+                        <td style={{ ...td, padding: '7px 8px', color: it.dueDate ? C.sub : '#B3261E' }}>{fmt(it.dueDate)}</td>
+                        <td style={{ ...td, padding: '7px 8px', textAlign: 'right', fontWeight: 700, color: 'var(--vl-brandText)' }}>{hrsOf(it)}h</td>
+                        <td style={{ ...td, textAlign: 'right', color: C.sub }}>{it.hrs}h</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ padding: '9px 14px', fontSize: 11, color: 'var(--vl-sub)', borderTop: `1px solid ${C.line2}` }}>
+                Allocation = Remaining Work (or Original Estimate − Completed) of open assigned items, spread across the days of their Start→Due window.{' '}
+                <b style={{ color: '#B3261E' }}>Items with no dates</b> are treated as current workload across the whole period — set Start/Due dates in Boards to spread them correctly.
+              </div>
+            </div>
+          );
+        })()}
+
       {/* ---- project roll-up — % of team capacity per day (current only) ---- */}
       {isCurrent && (
         <Card pad="12px 14px" style={{ marginBottom: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
             <span style={{ font: '600 13px "Open Sans",sans-serif' }}>Project roll-up — % of team capacity per day</span>
-            <span style={{ fontSize: 10, color: '#797775' }}>darker = heavier load</span>
+            <span style={{ fontSize: 10, color: 'var(--vl-sub)' }}>darker = heavier load</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '180px repeat(5,1fr) 56px', gap: 3, alignItems: 'center' }}>
             <div />
@@ -514,7 +597,7 @@ function ResourceBody({
               const dvals = period.days.map((_, di) => Math.round(((p.byDay[di] ?? 0) / teamDayCap) * 100));
               const avg = Math.round(dvals.reduce((a, b) => a + b, 0) / Math.max(1, dvals.length));
               return [
-                <div key={`n${p.name}`} style={{ fontSize: 11, color: '#323130', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <div key={`n${p.name}`} style={{ fontSize: 11, color: 'var(--vl-ink2)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {p.name}
                 </div>,
                 ...dvals.slice(0, 5).map((v, ci) => (
@@ -522,7 +605,7 @@ function ResourceBody({
                     {v}%
                   </div>
                 )),
-                <div key={`a${p.name}`} style={{ textAlign: 'center', fontSize: 11, fontWeight: 700, color: C.navy }}>
+                <div key={`a${p.name}`} style={{ textAlign: 'center', fontSize: 11, fontWeight: 700, color: 'var(--vl-brandText)' }}>
                   {avg}%
                 </div>,
               ];
@@ -537,7 +620,7 @@ function ResourceBody({
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
             <thead>
-              <tr style={{ background: '#faf9f8', color: C.sub, textAlign: 'left' }}>
+              <tr style={{ background: 'var(--vl-soft)', color: C.sub, textAlign: 'left' }}>
                 <th style={th}>Resource</th>
                 <th style={{ ...th, padding: '7px 8px' }}>Role</th>
                 <th style={{ ...th, padding: '7px 8px', textAlign: 'right' }}>Capacity</th>
@@ -549,14 +632,14 @@ function ResourceBody({
             <tbody>
               {people.map((p) => (
                 <tr key={p.name} style={{ borderBottom: `1px solid ${C.line2}` }}>
-                  <td style={{ ...td, fontWeight: 600, color: '#323130' }}>{p.name}</td>
+                  <td style={{ ...td, fontWeight: 600, color: 'var(--vl-ink2)' }}>{p.name}</td>
                   <td style={{ ...td, padding: '8px 8px', color: C.sub }}>{p.role}</td>
-                  <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: '#323130' }}>{p.capacityHrs}h</td>
-                  <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: '#797775' }}>{p.leaveHrs}h</td>
-                  <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: '#323130' }}>{p.allocatedHrs}h</td>
+                  <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: 'var(--vl-ink2)' }}>{p.capacityHrs}h</td>
+                  <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: 'var(--vl-sub)' }}>{p.leaveHrs}h</td>
+                  <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: 'var(--vl-ink2)' }}>{p.allocatedHrs}h</td>
                   <td style={{ ...td, padding: '8px 8px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div style={{ flex: 1, height: 9, background: '#edebe9', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ flex: 1, height: 9, background: 'var(--vl-track)', borderRadius: 3, overflow: 'hidden' }}>
                         <div style={{ width: `${Math.min(112, p.utilPct)}%`, height: '100%', background: bandColor(p.utilPct) }} />
                       </div>
                       <span style={{ width: 42, textAlign: 'right', fontWeight: 700, color: bandColor(p.utilPct) }}>{p.utilPct}%</span>
@@ -585,7 +668,7 @@ function ResourceBody({
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
                 <thead>
-                  <tr style={{ background: '#faf9f8', color: C.sub, textAlign: 'left' }}>
+                  <tr style={{ background: 'var(--vl-soft)', color: C.sub, textAlign: 'left' }}>
                     <th style={th}>Resource</th>
                     <th style={{ ...th, padding: '7px 8px', textAlign: 'right' }}>Azure allocated</th>
                     <th style={{ ...th, padding: '7px 8px', textAlign: 'right' }}>Timesheet entered</th>
@@ -599,8 +682,8 @@ function ResourceBody({
                     const varColor = Math.abs(tsVar) <= 8 ? C.green : Math.abs(tsVar) <= 20 ? C.amber : C.red;
                     return (
                       <tr key={p.name} style={{ borderBottom: `1px solid ${C.line2}` }}>
-                        <td style={{ ...td, fontWeight: 600, color: '#323130' }}>{p.name}</td>
-                        <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: C.navy, fontWeight: 600 }}>{p.allocatedHrs}h</td>
+                        <td style={{ ...td, fontWeight: 600, color: 'var(--vl-ink2)' }}>{p.name}</td>
+                        <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: 'var(--vl-brandText)', fontWeight: 600 }}>{p.allocatedHrs}h</td>
                         <td style={{ ...td, padding: '8px 8px', textAlign: 'right', color: C.orange, fontWeight: 600 }}>{data.timesheetConnected ? `${p.timesheetHrs}h` : '—'}</td>
                         <td style={{ ...td, padding: '8px 8px' }}>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -619,8 +702,8 @@ function ResourceBody({
             </div>
           );
         })()}
-        <div style={{ padding: '9px 14px', fontSize: 11, color: '#797775', borderTop: `1px solid ${C.line2}` }}>
-          <span style={{ color: C.navy }}>■</span> Azure Boards allocated &nbsp;·&nbsp; <span style={{ color: C.orange }}>■</span> Timesheet entered &nbsp;·&nbsp; under-logging = lost billable time, over-logging = scope/board hygiene gap
+        <div style={{ padding: '9px 14px', fontSize: 11, color: 'var(--vl-sub)', borderTop: `1px solid ${C.line2}` }}>
+          <span style={{ color: 'var(--vl-brandText)' }}>■</span> Azure Boards allocated &nbsp;·&nbsp; <span style={{ color: C.orange }}>■</span> Timesheet entered &nbsp;·&nbsp; under-logging = lost billable time, over-logging = scope/board hygiene gap
         </div>
       </Card>
 
@@ -632,7 +715,7 @@ function ResourceBody({
         <div style={{ overflow: 'auto', maxHeight: 300 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 760 }}>
             <thead>
-              <tr style={{ background: '#faf9f8', color: C.sub, textAlign: 'left' }}>
+              <tr style={{ background: 'var(--vl-soft)', color: C.sub, textAlign: 'left' }}>
                 <th style={{ ...th, width: 240 }}>Project</th>
                 <th style={{ ...th, padding: '7px 8px' }}>Lead</th>
                 <th style={{ ...th, padding: '7px 8px' }}>Team allocation &amp; %</th>
@@ -642,7 +725,7 @@ function ResourceBody({
             <tbody>
               {data.projects.map((pa) => (
                 <tr key={pa.name} style={{ borderBottom: `1px solid ${C.line2}` }}>
-                  <td style={{ ...td, fontWeight: 600, color: '#323130' }}>{pa.name}</td>
+                  <td style={{ ...td, fontWeight: 600, color: 'var(--vl-ink2)' }}>{pa.name}</td>
                   <td style={{ ...td, padding: '7px 8px', color: C.sub }}>{pa.lead}</td>
                   <td style={{ ...td, padding: '7px 8px', minWidth: 300 }}>
                     <div style={{ display: 'flex', height: 22, width: '100%', borderRadius: 3, overflow: 'hidden', background: C.line2 }}>
@@ -657,7 +740,7 @@ function ResourceBody({
                       })}
                     </div>
                   </td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: C.navy }}>{pa.total}h</td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: 'var(--vl-brandText)' }}>{pa.total}h</td>
                 </tr>
               ))}
             </tbody>
@@ -672,16 +755,16 @@ function ResourceBody({
 const th: CSSProperties = { padding: '7px 14px', fontWeight: 600 };
 const td: CSSProperties = { padding: '8px 14px' };
 function selStyle(w: number): CSSProperties {
-  return { appearance: 'none', background: '#fff', border: '1px solid #c8c6c4', borderRadius: 4, padding: '6px 26px 6px 10px', fontSize: 12, color: C.ink, width: w, cursor: 'pointer' };
+  return { appearance: 'none', background: 'var(--vl-card)', border: '1px solid var(--vl-borderStrong)', borderRadius: 4, padding: '6px 26px 6px 10px', fontSize: 12, color: C.ink, width: w, cursor: 'pointer' };
 }
 
 function Unit({ children }: { children: ReactNode }) {
-  return <span style={{ fontSize: 13, color: '#797775' }}>{children}</span>;
+  return <span style={{ fontSize: 13, color: 'var(--vl-sub)' }}>{children}</span>;
 }
 
 function Card({ children, pad, style }: { children: ReactNode; pad?: string; style?: CSSProperties }) {
   return (
-    <div style={{ background: '#fff', border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,64,.05)', padding: pad, ...style }}>
+    <div style={{ background: 'var(--vl-card)', border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,64,.05)', padding: pad, ...style }}>
       {children}
     </div>
   );
@@ -689,7 +772,7 @@ function Card({ children, pad, style }: { children: ReactNode; pad?: string; sty
 
 function KpiCard({ top, label, value, sub }: { top: string; label: string; value: ReactNode; sub: string }) {
   return (
-    <div style={{ background: '#fff', border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,64,.05)', padding: '12px 14px', borderTop: `3px solid ${top}` }}>
+    <div style={{ background: 'var(--vl-card)', border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,64,.05)', padding: '12px 14px', borderTop: `3px solid ${top}` }}>
       <div style={{ fontSize: 10, color: C.sub, textTransform: 'uppercase', letterSpacing: '.4px', fontWeight: 600 }}>{label}</div>
       <div style={{ font: '800 26px "Open Sans",sans-serif' }}>{value}</div>
       <div style={{ fontSize: 10, color: C.faint }}>{sub}</div>
@@ -697,55 +780,3 @@ function KpiCard({ top, label, value, sub }: { top: string; label: string; value
   );
 }
 
-/** Prototype-style multi-select with orange checkboxes and an "All" reset row. */
-function MultiSelect({
-  options,
-  selected,
-  onChange,
-  allLabel,
-}: {
-  options: string[];
-  selected: string[];
-  onChange: (v: string[]) => void;
-  allLabel: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const summary = selected.length === 0 ? allLabel : selected.length === 1 ? selected[0] : `${selected.length} selected`;
-  const toggle = (name: string): void => {
-    const cur = [...selected];
-    const i = cur.indexOf(name);
-    if (i >= 0) cur.splice(i, 1);
-    else cur.push(name);
-    onChange(cur);
-  };
-  return (
-    <div style={{ position: 'relative' }}>
-      <div
-        onClick={() => setOpen((v) => !v)}
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, border: '1px solid #c8c6c4', borderRadius: 4, padding: '6px 10px', fontSize: 12, color: C.ink, cursor: 'pointer', background: '#fff', minWidth: 150 }}
-      >
-        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{summary}</span>
-        <span style={{ color: '#797775', fontSize: 10 }}>{open ? '▲' : '▼'}</span>
-      </div>
-      {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 30, background: '#fff', border: '1px solid #c8c6c4', borderRadius: 6, boxShadow: '0 4px 14px rgba(0,0,0,.16)', padding: 6, minWidth: 200, maxHeight: 260, overflowY: 'auto' }}>
-          <div
-            onClick={() => onChange([])}
-            style={{ padding: '6px 10px', fontSize: 12, fontWeight: 600, color: selected.length === 0 ? C.navy : C.sub, cursor: 'pointer', borderRadius: 4, background: selected.length === 0 ? '#eef2fb' : 'transparent' }}
-          >
-            ✓ {allLabel}
-          </div>
-          {options.map((o) => {
-            const on = selected.includes(o);
-            return (
-              <div key={o} onClick={() => toggle(o)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', fontSize: 12, color: '#323130', cursor: 'pointer', borderRadius: 4, background: on ? '#fff7f0' : 'transparent' }}>
-                <span style={{ width: 14, height: 14, borderRadius: 3, border: `1px solid ${on ? C.orange : '#c8c6c4'}`, background: on ? C.orange : '#fff', color: '#fff', fontSize: 10, lineHeight: '13px', textAlign: 'center', flexShrink: 0 }}>{on ? '✓' : ''}</span>
-                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}

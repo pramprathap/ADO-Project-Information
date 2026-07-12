@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "veelead-project-information",
   "publisher": "PRamprathap",
-  "version": "1.5.0",
+  "version": "1.9.2",
   "name": "Project Information",
   "description": "Maintain structured, project-scoped information under Project Settings. Data is stored per project using the official Azure DevOps project-properties API.",
   "public": false,
@@ -79,6 +79,36 @@
       "properties": {
         "name": "Resource Allocation",
         "order": 91,
+        "uri": "dist/project-information.html",
+        "icon": "public/icons/extension-icon.png"
+      }
+    },
+    {
+      "id": "organization-effort-hub",
+      "type": "ms.vss-web.hub",
+      "description": "Organization-wide Effort & Timesheet (planned vs submitted vs approved).",
+      "targets": [
+        "ms.vss-web.collection-admin-hub-group",
+        "ms.vss-web.organization-admin-hub-group"
+      ],
+      "properties": {
+        "name": "Effort & Timesheet",
+        "order": 92,
+        "uri": "dist/project-information.html",
+        "icon": "public/icons/extension-icon.png"
+      }
+    },
+    {
+      "id": "organization-weekly-hub",
+      "type": "ms.vss-web.hub",
+      "description": "Weekly / Daily status report with PDF & PPT export.",
+      "targets": [
+        "ms.vss-web.collection-admin-hub-group",
+        "ms.vss-web.organization-admin-hub-group"
+      ],
+      "properties": {
+        "name": "Weekly Status",
+        "order": 93,
         "uri": "dist/project-information.html",
         "icon": "public/icons/extension-icon.png"
       }
