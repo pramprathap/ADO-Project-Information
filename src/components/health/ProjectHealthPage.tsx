@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Spinner, Text, makeStyles, tokens } from '@fluentui/react-components';
+import { Button, Text, makeStyles, tokens } from '@fluentui/react-components';
+import { LoadingState } from '@/components/LoadingState';
 import {
   ArrowClockwiseRegular,
   CheckmarkCircleFilled,
@@ -230,13 +231,26 @@ function HealthHeader({
   const track = isContinuous
     ? 'Continuous / Activity-based'
     : (info?.projectType && label(PROJECT_TYPE_OPTIONS, info.projectType)) || 'Delivery';
-  const lead = epic?.lead || info?.projectManager?.displayName || info?.deliveryManager?.displayName || '—';
-  const client = info?.clientName || '—';
-  const billing = (info?.billingType && label(BILLING_TYPE_OPTIONS, info.billingType)) || '—';
+  // Lead comes from the Project Information the team maintains — the Epic's
+  // Assigned To is only a fallback when no PM/DM was captured.
+  const lead =
+    info?.projectManager?.displayName || info?.deliveryManager?.displayName || epic?.lead || '';
+  const client = info?.clientName || '';
+  const billing = (info?.billingType && label(BILLING_TYPE_OPTIONS, info.billingType)) || '';
   const start = fmtMilestone(info?.projectStartDate || undefined);
   // Prefer the selected Epic's Go-Live milestone date; fall back to Planned End.
   const goLive = (epic?.isDevelopment && epic.goLiveDate) || info?.plannedEndDate || '';
-  const completed = info?.projectStatus === 'Completed';
+  // Delivered when the PM marked it Completed, the selected epic is closed, or
+  // every work item in scope is done.
+  const allDone = !!metrics && metrics.total > 0 && metrics.completed === metrics.total;
+  const completed = info?.projectStatus === 'Completed' || !!epic?.completed || allDone;
+
+  // Subtitle: only the facts that exist — no "— · — · Planned — → —" noise.
+  const subParts = [client, lead, billing].filter(Boolean);
+  const hasDates = !!info?.projectStartDate || !!goLive;
+  if (hasDates) {
+    subParts.push(`Planned ${start} → ${fmtMilestone(goLive || undefined)}`);
+  }
   const slip = goLive && goLive < today && !completed ? Math.max(0, daysPast(goLive, today)) : 0;
   const goLiveSub = completed ? 'Delivered' : slip > 0 ? `At risk · ${slip}d slip` : 'On schedule';
   const goLiveBg = slip > 0 ? '#C0291C' : 'rgba(255,255,255,.12)';
@@ -270,15 +284,13 @@ function HealthHeader({
           <span className={styles.heroTitle}>{projectName}</span>
           <span className={styles.trackChip}>{track}</span>
         </div>
-        <div className={styles.heroSub}>
-          {client} · {lead} · {billing} · Planned {start} → {fmtMilestone(goLive || undefined)}
-        </div>
+        <div className={styles.heroSub}>{subParts.join(' · ')}</div>
       </div>
       <div className={styles.heroBoxes}>
         {isContinuous ? (
-          <div className={styles.box} style={{ backgroundColor: '#1f7a44' }}>
-            <div className={styles.boxBig}>Ongoing</div>
-            <div className={styles.boxSub}>Cadence · Activity-based</div>
+          <div className={styles.box} style={{ backgroundColor: completed ? '#2E7D32' : '#1f7a44' }}>
+            <div className={styles.boxBig}>{completed ? 'Completed' : 'Ongoing'}</div>
+            <div className={styles.boxSub}>{completed ? 'All work closed' : 'Cadence · Activity-based'}</div>
           </div>
         ) : (
           <>
@@ -601,8 +613,12 @@ export function ProjectHealthPage({ services }: { services: AppServices }) {
     : !!metrics?.milestonesAvailable;
 
   // The whole report reflects the selected Epic (its own scoped metrics), or the
-  // project-wide roll-up when no Epic is selected.
-  const activeMetrics = selectedEpic?.report ?? metrics;
+  // project-wide roll-up when no Epic is selected. An Epic with no work items
+  // (or none loaded) falls back to the project-wide numbers so the header never
+  // shows a misleading 0%.
+  const scopedReport =
+    selectedEpic?.report && selectedEpic.report.total > 0 ? selectedEpic.report : null;
+  const activeMetrics = scopedReport ?? metrics;
 
   return (
     <div className={styles.root}>
@@ -615,9 +631,7 @@ export function ProjectHealthPage({ services }: { services: AppServices }) {
 
       {status === 'loading' && (
         <div className={styles.card}>
-          <div className={styles.center}>
-            <Spinner label="Loading project health…" />
-          </div>
+          <LoadingState label="Loading project health…" />
         </div>
       )}
       {status === 'error' && (

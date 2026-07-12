@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import * as SDK from 'azure-devops-extension-sdk';
 import { Spinner, makeStyles, tokens } from '@fluentui/react-components';
-import { LoadingState } from '@/components/LoadingState';
 import { ErrorState } from '@/components/ErrorState';
+import { ProgressLoader } from '@/components/portfolio/ProgressLoader';
 import { ProjectHealthPage } from '@/components/health/ProjectHealthPage';
 import type { AppServices } from '@/services/appServices';
 import {
   buildProjectServices,
-  listProjects,
+  listActiveProjects,
   resolveOrgContext,
   type OrgContext,
   type ProjectRef,
@@ -56,6 +56,7 @@ export function OrganizationHealthPage() {
   const [projects, setProjects] = useState<ProjectRef[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [services, setServices] = useState<AppServices | null>(null);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const notified = useRef(false);
 
   // Initialise once: resolve the org context and enumerate accessible projects.
@@ -74,7 +75,9 @@ export function OrganizationHealthPage() {
         await SDK.init({ loaded: false, applyTheme: true });
         await SDK.ready();
         const resolved = await resolveOrgContext();
-        const list = await listProjects(resolved);
+        const list = await listActiveProjects(resolved, (done, total) => {
+          if (!cancelled) setProgress({ done, total });
+        });
         if (!cancelled) {
           setOrg(resolved);
           setProjects(list);
@@ -119,7 +122,9 @@ export function OrganizationHealthPage() {
     }
   }, [status]);
 
-  if (status === 'initializing') return <LoadingState label="Loading organization projects…" />;
+  if (status === 'initializing') {
+    return <ProgressLoader done={progress.done} total={progress.total} label="Loading organization projects" />;
+  }
   if (status === 'error') {
     return (
       <ErrorState

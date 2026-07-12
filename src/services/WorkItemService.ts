@@ -23,12 +23,16 @@ const REPORT_WEEKS = 8;
 
 /** One assignable work item for the Resource Allocation roll-up. */
 export interface AssignmentItem {
+  id: number;
+  title: string;
   assignee: string;
   type: string;
   state: string;
   done: boolean;
   startDate?: string;
   dueDate?: string;
+  /** Closed (or last state-change) date for done items. */
+  closedDate?: string;
   originalEstimate: number;
   remainingWork: number;
   completedWork: number;
@@ -661,6 +665,15 @@ export class WorkItemService {
     const openWork =
       (task ? task.open + task.inProgress : 0) + (bug ? bug.open + bug.inProgress : 0);
 
+    // Age of the most overdue open item (how long problems sit unattended).
+    let overdueMaxAgeDays = 0;
+    for (const w of s.workItems) {
+      if (w.overdue && w.dueDate) {
+        overdueMaxAgeDays = Math.max(overdueMaxAgeDays, daysBetween(w.dueDate, today));
+      }
+    }
+    const openBlockers = openItems.filter((o) => o.kind === 'Blocker' && !isDone(o.state));
+
     return {
       total: s.total,
       completed: s.completed,
@@ -668,7 +681,11 @@ export class WorkItemService {
       notStarted: s.notStarted,
       completionPct: s.completionPct,
       overdue: s.overdue,
-      blockers: openItems.filter((o) => o.kind === 'Blocker' && !isDone(o.state)).length,
+      overdueMaxAgeDays,
+      blockers: openBlockers.length,
+      oldestBlockerDays: openBlockers.reduce((a, o) => Math.max(a, o.ageDays), 0),
+      bugsReopened: s.bugs.reopened,
+      bugsClosed: s.bugs.closed,
       openItemsCount: openItems.filter((o) => !isDone(o.state)).length,
       closedCount: s.completed,
       openWork,
@@ -696,6 +713,7 @@ export class WorkItemService {
     const allIds = await this.wiqlIds();
     const fields = [
       'System.Id',
+      'System.Title',
       'System.WorkItemType',
       'System.State',
       'System.AssignedTo',
@@ -704,22 +722,30 @@ export class WorkItemService {
       'Microsoft.VSTS.Scheduling.OriginalEstimate',
       'Microsoft.VSTS.Scheduling.RemainingWork',
       'Microsoft.VSTS.Scheduling.CompletedWork',
+      'Microsoft.VSTS.Common.ClosedDate',
+      'Microsoft.VSTS.Common.StateChangeDate',
     ];
     const items = allIds.length > 0 ? await this.batch(allIds.slice(0, MAX_ITEMS), fields) : [];
     const out: AssignmentItem[] = [];
-    for (const { fields: f } of items) {
+    for (const { id, fields: f } of items) {
       const type = str(f, 'System.WorkItemType');
       if (type !== 'Task' && type !== 'Bug' && type !== 'User Story') continue;
       const assignee = assignedName(f);
       if (!assignee) continue;
       const state = str(f, 'System.State');
       out.push({
+        id,
+        title: str(f, 'System.Title'),
         assignee,
         type,
         state,
         done: isDone(state),
         startDate: toDateOnly(str(f, 'Microsoft.VSTS.Scheduling.StartDate')),
         dueDate: toDateOnly(str(f, 'Microsoft.VSTS.Scheduling.DueDate')),
+        closedDate: toDateOnly(
+          str(f, 'Microsoft.VSTS.Common.ClosedDate') ||
+            str(f, 'Microsoft.VSTS.Common.StateChangeDate'),
+        ),
         originalEstimate: num(f, 'Microsoft.VSTS.Scheduling.OriginalEstimate'),
         remainingWork: num(f, 'Microsoft.VSTS.Scheduling.RemainingWork'),
         completedWork: num(f, 'Microsoft.VSTS.Scheduling.CompletedWork'),
@@ -1068,6 +1094,12 @@ export class WorkItemService {
         iteration,
         overdue: isOverdue,
         startDate: start,
+        closedDate: done
+          ? toDateOnly(
+              str(fields, 'Microsoft.VSTS.Common.ClosedDate') ||
+                str(fields, 'Microsoft.VSTS.Common.StateChangeDate'),
+            )
+          : undefined,
         targetDate,
         revisedDate,
         revisedCount,

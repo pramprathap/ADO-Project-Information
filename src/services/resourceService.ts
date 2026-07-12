@@ -173,6 +173,31 @@ export interface ProjectSplitDay {
   total: number;
 }
 
+/** Work items completed in the period (by type) + current in-progress, per project. */
+export interface ProjectWork {
+  project: string;
+  stories: number;
+  tasks: number;
+  bugs: number;
+  completed: number;
+  inprog: number;
+}
+
+/** One work item contributing to a person's allocation (for the breakdown). */
+export interface AllocItem {
+  id: number;
+  title: string;
+  type: string;
+  state: string;
+  project: string;
+  startDate?: string;
+  dueDate?: string;
+  /** Hours attributed to the whole period. */
+  hrs: number;
+  /** Hours attributed per day, aligned with period.days. */
+  day: number[];
+}
+
 export interface ResourcePerson {
   name: string;
   role: string;
@@ -185,6 +210,10 @@ export interface ResourcePerson {
   byDay: number[];
   /** Allocation split per project with per-day detail. */
   byProject: ProjectSplitDay[];
+  /** Work delivered in the period + in-progress load, per project. */
+  work: ProjectWork[];
+  /** The work items behind the allocation (transparency for the load %). */
+  items: AllocItem[];
   /** Timesheet entered hours (LMS) — 0 until the middle-tier is connected. */
   timesheetHrs: number;
 }
@@ -229,6 +258,8 @@ export async function loadResourceData(
   interface P {
     byProject: Map<string, number[]>;
     byDay: number[];
+    work: Map<string, ProjectWork>;
+    items: AllocItem[];
   }
   const personMap = new Map<string, P>();
   const projDay = new Map<string, { lead: string; byDay: number[]; people: Map<string, number> }>();
@@ -238,10 +269,18 @@ export async function loadResourceData(
   const ensure = (name: string): P => {
     let p = personMap.get(name);
     if (!p) {
-      p = { byProject: new Map(), byDay: period.days.map(() => 0) };
+      p = { byProject: new Map(), byDay: period.days.map(() => 0), work: new Map(), items: [] };
       personMap.set(name, p);
     }
     return p;
+  };
+  const ensureWork = (p: P, project: string): ProjectWork => {
+    let w = p.work.get(project);
+    if (!w) {
+      w = { project, stories: 0, tasks: 0, bugs: 0, completed: 0, inprog: 0 };
+      p.work.set(project, w);
+    }
+    return w;
   };
 
   const queue = [...projects];
@@ -264,19 +303,33 @@ export async function loadResourceData(
         }
         const lead = info.projectManager?.displayName || '—';
 
+        const periodStart = period.days[0];
+        const periodEnd = period.days[period.days.length - 1];
         for (const a of assignments) {
-          if (a.done) continue;
+          const p = ensure(a.assignee);
+          const w = ensureWork(p, project.name);
+          if (a.done) {
+            // Delivered-in-period counts (for the Effort page detail).
+            const cd = a.closedDate ?? '';
+            if (cd >= periodStart && cd <= periodEnd) {
+              w.completed += 1;
+              if (a.type === 'User Story') w.stories += 1;
+              else if (a.type === 'Bug') w.bugs += 1;
+              else w.tasks += 1;
+            }
+            continue;
+          }
+          w.inprog += 1;
           const hrs = a.remainingWork > 0 ? a.remainingWork : Math.max(0, a.originalEstimate - a.completedWork);
           if (hrs <= 0) continue;
-          const winStart = a.startDate ?? period.days[0];
-          const winEnd = a.dueDate ?? period.days[period.days.length - 1];
-          if (winEnd < period.days[0] || winStart > period.days[period.days.length - 1]) continue;
+          const winStart = a.startDate ?? periodStart;
+          const winEnd = a.dueDate ?? periodEnd;
+          if (winEnd < periodStart || winStart > periodEnd) continue;
           const overlapIdx = period.days
             .map((d, i) => (d >= winStart && d <= winEnd ? i : -1))
             .filter((i) => i >= 0);
           if (overlapIdx.length === 0) continue;
 
-          const p = ensure(a.assignee);
           let projSeries = p.byProject.get(project.name);
           if (!projSeries) {
             projSeries = period.days.map(() => 0);
@@ -288,12 +341,25 @@ export async function loadResourceData(
             projDay.set(project.name, proj);
           }
           const perDay = hrs / overlapIdx.length;
+          const itemDay = period.days.map(() => 0);
           for (const i of overlapIdx) {
             p.byDay[i] += perDay;
             projSeries[i] += perDay;
             proj.byDay[i] += perDay;
+            itemDay[i] = perDay;
           }
           proj.people.set(a.assignee, (proj.people.get(a.assignee) ?? 0) + hrs);
+          p.items.push({
+            id: a.id,
+            title: a.title,
+            type: a.type,
+            state: a.state,
+            project: project.name,
+            startDate: a.startDate,
+            dueDate: a.dueDate,
+            hrs: round1(hrs),
+            day: itemDay.map(round1),
+          });
         }
       } catch (err) {
         console.warn(`Resource allocation: skipped project ${project.name}.`, err);
@@ -335,6 +401,10 @@ export async function loadResourceData(
         utilPct: Math.round((allocatedHrs / effective) * 100),
         byDay: p.byDay.map(round1),
         byProject,
+        work: [...p.work.values()]
+          .filter((w) => w.completed > 0 || w.inprog > 0)
+          .sort((a, b) => b.completed - a.completed),
+        items: [...p.items].sort((a, b) => b.hrs - a.hrs),
         timesheetHrs: round1(tsHours.get(key)?.submitted ?? 0),
       };
     })

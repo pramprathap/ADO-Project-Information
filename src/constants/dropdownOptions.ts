@@ -34,6 +34,7 @@ export const PROJECT_HEALTH_OPTIONS: DropdownOption<ProjectHealth>[] = [
 export const PROJECT_TYPE_OPTIONS: DropdownOption<ProjectType>[] = [
   { value: 'Development', label: 'Development' },
   { value: 'Support', label: 'Support' },
+  { value: 'ResourcingModel', label: 'Resourcing Model' },
   { value: 'TrainingAndLearning', label: 'Training & Learning' },
   { value: 'Internal', label: 'Internal' },
   { value: 'Internship', label: 'Internship' },

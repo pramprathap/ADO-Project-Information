@@ -41,6 +41,16 @@ export function MOCK_RESOURCE_DATA(period: Period): ResourceData {
       utilPct: Math.round((allocatedHrs / effective) * 100),
       byDay,
       byProject,
+      work: byProject.map((bp) => ({ project: bp.project, stories: 1, tasks: 3, bugs: 1, completed: 5, inprog: 2 })),
+      items: byProject.map((bp, i) => ({
+        id: 22000 + i,
+        title: `Sample task on ${bp.project}`,
+        type: 'Task',
+        state: 'Active',
+        project: bp.project,
+        hrs: bp.total,
+        day: bp.day,
+      })),
       timesheetHrs: 0,
     };
   });

@@ -133,6 +133,8 @@ export interface WorkItemRow {
   overdue: boolean;
   /** Start Date. */
   startDate?: string;
+  /** Closed (or last state-change) date, for done items. */
+  closedDate?: string;
   /** Target Date (Features) — the phase target. */
   targetDate?: string;
   /** Revised Target Date (custom field), when set. */
@@ -220,7 +222,14 @@ export interface PortfolioSummary {
   completionPct: number;
   /** Overdue work items (past due, not done). */
   overdue: number;
+  /** Age in days of the most overdue open item (0 when none). */
+  overdueMaxAgeDays: number;
   blockers: number;
+  /** Age in days of the oldest open blocker (0 when none). */
+  oldestBlockerDays: number;
+  /** Reopened bugs (rework signal). */
+  bugsReopened: number;
+  bugsClosed: number;
   /** Open Blocker/Clarification items (not done). */
   openItemsCount: number;
   /** All completed work items. */

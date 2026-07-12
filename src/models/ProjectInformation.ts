@@ -3,7 +3,14 @@ import type { AzureDevOpsIdentity } from './AzureDevOpsIdentity';
 export type ProjectStatus = 'NotStarted' | 'InProgress' | 'OnHold' | 'Completed' | 'Cancelled';
 
 export type ProjectType =
-  'Development' | 'Support' | 'TrainingAndLearning' | 'Internal' | 'Internship' | 'POC' | 'Other';
+  | 'Development'
+  | 'Support'
+  | 'ResourcingModel'
+  | 'TrainingAndLearning'
+  | 'Internal'
+  | 'Internship'
+  | 'POC'
+  | 'Other';
 
 export type ProjectHealth = 'Green' | 'Amber' | 'Red';
 

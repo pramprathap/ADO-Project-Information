@@ -30,6 +30,8 @@ import { ProjectHealthPage } from '@/components/health/ProjectHealthPage';
 import { OrganizationHealthPage } from '@/components/health/OrganizationHealthPage';
 import { OverviewPage } from '@/components/portfolio/OverviewPage';
 import { ResourceAllocationPage } from '@/components/portfolio/ResourceAllocationPage';
+import { EffortTimesheetPage } from '@/components/portfolio/EffortTimesheetPage';
+import { WeeklyStatusPage } from '@/components/portfolio/WeeklyStatusPage';
 import {
   DateField,
   DropdownField,
@@ -111,11 +113,13 @@ function getExtensionVersion(): string {
  * hubs load this same bundle; the active contribution id decides the page. In
  * local preview, `?page=health` selects the report.
  */
-type ActivePage = 'info' | 'health' | 'org' | 'overview' | 'resource';
+type ActivePage = 'info' | 'health' | 'org' | 'overview' | 'resource' | 'effort' | 'weekly';
 
 function pageFromContributionId(id: string): ActivePage {
   if (id.endsWith('organization-overview-hub')) return 'overview';
   if (id.endsWith('organization-resource-hub')) return 'resource';
+  if (id.endsWith('organization-effort-hub')) return 'effort';
+  if (id.endsWith('organization-weekly-hub')) return 'weekly';
   if (id.endsWith('organization-health-hub')) return 'org';
   return id.endsWith('project-health-hub') ? 'health' : 'info';
 }
@@ -133,7 +137,14 @@ function usePage(): ActivePage | null {
     if (import.meta.env.DEV) {
       const p = new URLSearchParams(window.location.search).get('page');
       setPage(
-        p === 'health' || p === 'org' || p === 'overview' || p === 'resource' ? p : 'info',
+        p === 'health' ||
+          p === 'org' ||
+          p === 'overview' ||
+          p === 'resource' ||
+          p === 'effort' ||
+          p === 'weekly'
+          ? p
+          : 'info',
       );
       return;
     }
@@ -142,7 +153,14 @@ function usePage(): ActivePage | null {
       try {
         await SDK.init({ loaded: false, applyTheme: true });
         await SDK.ready();
-        if (!cancelled) setPage(pageFromContributionId(SDK.getContributionId() ?? ''));
+        if (!cancelled) {
+          const resolved = pageFromContributionId(SDK.getContributionId() ?? '');
+          setPage(resolved);
+          // Tell the host the frame is alive NOW so its own round spinner and
+          // "taking longer than expected" banner never linger — our branded
+          // loaders render immediately and take over for the data load.
+          void SDK.notifyLoadSucceeded();
+        }
       } catch (err) {
         console.error('Failed to resolve the active page.', err);
         if (!cancelled) setPage('info');
@@ -167,6 +185,10 @@ export function App() {
         <OverviewPage />
       ) : page === 'resource' ? (
         <ResourceAllocationPage />
+      ) : page === 'effort' ? (
+        <EffortTimesheetPage />
+      ) : page === 'weekly' ? (
+        <WeeklyStatusPage />
       ) : page === 'org' ? (
         <OrganizationHealthPage />
       ) : (
