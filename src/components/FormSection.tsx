@@ -1,16 +1,22 @@
 import type { ReactNode } from 'react';
-import { Card, makeStyles, tokens, Text } from '@fluentui/react-components';
+import { makeStyles, tokens, Text } from '@fluentui/react-components';
 
 export type GlyphTint = 'blue' | 'teal' | 'green' | 'amber' | 'violet';
 
 const useStyles = makeStyles({
-  columns: {
+  // Exactly three column stacks on wide screens; each column is an independent
+  // vertical stack so cards pack tightly with no cross-column gaps. Collapses to
+  // two then one column as the viewport narrows.
+  sections: {
     display: 'grid',
-    gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
     alignItems: 'start',
     gap: tokens.spacingHorizontalL,
     marginBottom: tokens.spacingVerticalL,
-    '@media (max-width: 960px)': {
+    '@media (max-width: 1200px)': {
+      gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    },
+    '@media (max-width: 760px)': {
       gridTemplateColumns: '1fr',
     },
   },
@@ -22,7 +28,9 @@ const useStyles = makeStyles({
   },
   card: {
     width: '100%',
-    padding: 0,
+    boxSizing: 'border-box',
+    overflow: 'visible',
+    backgroundColor: tokens.colorNeutralBackground1,
     borderRadius: '16px',
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     boxShadow: 'var(--pi-shadow-sm)',
@@ -57,10 +65,20 @@ const useStyles = makeStyles({
   title: { fontSize: '15.5px', fontWeight: 700, letterSpacing: '-0.01em' },
   caption: { fontSize: '12px', color: tokens.colorNeutralForeground3, display: 'block' },
   body: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-    gap: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalL}`,
+    // Flex-wrap (not grid) so rows always size to their tallest field and can
+    // never collapse/overlap. Each field grows to fill, wrapping at ~220px.
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+    columnGap: tokens.spacingHorizontalL,
+    rowGap: tokens.spacingVerticalM,
     padding: '20px',
+    '> *': {
+      flexGrow: 1,
+      flexShrink: 1,
+      flexBasis: '220px',
+      minWidth: 0,
+    },
   },
   tBlue: { backgroundColor: 'var(--pi-accent-soft)', color: 'var(--pi-accent)' },
   tTeal: {
@@ -91,7 +109,7 @@ export function FormSection({ title, caption, glyph, tint = 'blue', children }: 
   }[tint];
 
   return (
-    <Card className={styles.card} role="group" aria-label={title}>
+    <div className={styles.card} role="group" aria-label={title}>
       <div className={styles.header}>
         {glyph && <div className={`${styles.glyph} ${tintClass}`}>{glyph}</div>}
         <div>
@@ -102,23 +120,23 @@ export function FormSection({ title, caption, glyph, tint = 'blue', children }: 
         </div>
       </div>
       <div className={styles.body}>{children}</div>
-    </Card>
+    </div>
   );
 }
 
-/** Two independent, side-by-side column stacks (stacks vertically on narrow screens). */
-export function Columns({ children }: { children: ReactNode }) {
+/** Three-column container for section cards. */
+export function Sections({ children }: { children: ReactNode }) {
   const styles = useStyles();
-  return <div className={styles.columns}>{children}</div>;
+  return <div className={styles.sections}>{children}</div>;
 }
 
-/** A single vertical stack of section cards within {@link Columns}. */
+/** A single vertical stack (one of the three columns). */
 export function Column({ children }: { children: ReactNode }) {
   const styles = useStyles();
   return <div className={styles.column}>{children}</div>;
 }
 
-/** Field wrapper that spans the full width of a section's inner grid. */
+/** Field wrapper that spans the full width of a section's inner (flex) row. */
 export function FullWidthField({ children }: { children: ReactNode }) {
-  return <div style={{ gridColumn: '1 / -1' }}>{children}</div>;
+  return <div style={{ flexBasis: '100%', width: '100%' }}>{children}</div>;
 }

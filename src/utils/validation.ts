@@ -25,10 +25,11 @@ export const FIELD_ORDER: ValidationField[] = [
   'projectHealth',
   'currentPhase',
   'billingType',
-  'clientContactName',
-  'clientContactEmail',
+  'clientContacts',
+  'clientSponsor',
   'clientRegion',
   'internalSponsor',
+  'team',
   'technologyStack',
   'repositorySource',
   'repositoryUrl',
@@ -73,10 +74,10 @@ export function validateProjectInformation(info: ProjectInformation): Validation
   }
 
   // ---- B. Project Ownership ----
-  // Delivery Manager is required. All other person fields are optional but, if
-  // present, must be a resolved identity (guards against arbitrary text).
-  if (!info.deliveryManager || !info.deliveryManager.descriptor) {
-    setError('deliveryManager', 'Delivery Manager is required. Select a person.');
+  // All person fields are optional but, if present, must be a resolved identity
+  // (guards against arbitrary typed text being accepted).
+  if (info.deliveryManager && !info.deliveryManager.descriptor) {
+    setError('deliveryManager', 'Select a valid person for Delivery Manager.');
   }
   if (info.projectManager && !info.projectManager.descriptor) {
     setError('projectManager', 'Select a valid person for Project Manager / Project Lead.');
@@ -88,11 +89,20 @@ export function validateProjectInformation(info: ProjectInformation): Validation
     setError('internalSponsor', 'Select a valid person for Internal Sponsor.');
   }
 
+  // Project team: each row must have both a role and a resolved person.
+  for (const member of info.team ?? []) {
+    const hasRole = member.role.trim() !== '';
+    const hasPerson = !!member.identity && !!member.identity.descriptor;
+    if (hasRole !== hasPerson) {
+      setError('team', 'Each team member needs both a role and a selected person.');
+      break;
+    }
+  }
+
   // ---- C. Timeline ----
+  // Project Start Date is optional; validate its format only when provided.
   const start = (info.projectStartDate ?? '').trim();
-  if (start === '') {
-    setError('projectStartDate', 'Project Start Date is required.');
-  } else if (!isValidIsoDate(start)) {
+  if (start !== '' && !isValidIsoDate(start)) {
     setError('projectStartDate', 'Enter a valid date.');
   }
 
@@ -115,11 +125,9 @@ export function validateProjectInformation(info: ProjectInformation): Validation
   }
 
   // ---- D. Delivery Status ----
+  // Project Status stays required; Project Health is optional.
   if (!info.projectStatus) {
     setError('projectStatus', 'Project Status is required.');
-  }
-  if (!info.projectHealth) {
-    setError('projectHealth', 'Project Health is required.');
   }
   // Completed projects should warn (not block) when Actual End Date is empty.
   if (info.projectStatus === 'Completed' && actual === '') {
@@ -127,16 +135,14 @@ export function validateProjectInformation(info: ProjectInformation): Validation
   }
 
   // ---- F. Client Information ----
-  if ((info.clientContactName ?? '').trim().length > FieldLimits.ClientContactName) {
-    setError(
-      'clientContactName',
-      `Client Contact Name must be ${FieldLimits.ClientContactName} characters or fewer.`,
-    );
-  }
-  const email = (info.clientContactEmail ?? '').trim();
-  if (email !== '') {
-    if (email.length > FieldLimits.ClientContactEmail || !isValidEmail(email)) {
-      setError('clientContactEmail', 'Enter a valid email address.');
+  for (const contact of info.clientContacts ?? []) {
+    const contactEmail = (contact.email ?? '').trim();
+    if (
+      contactEmail !== '' &&
+      (contactEmail.length > FieldLimits.ClientContactEmail || !isValidEmail(contactEmail))
+    ) {
+      setError('clientContacts', 'Enter a valid email address for each client contact.');
+      break;
     }
   }
   if (!info.clientRegion) {

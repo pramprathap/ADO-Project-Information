@@ -23,13 +23,20 @@ import { ErrorState } from '@/components/ErrorState';
 import { PermissionBanner } from '@/components/PermissionBanner';
 import { Hero } from '@/components/Hero';
 import { StatStrip } from '@/components/StatStrip';
-import { Column, Columns, FormSection, FullWidthField } from '@/components/FormSection';
+import { Column, FormSection, FullWidthField, Sections } from '@/components/FormSection';
+import { ProjectTeam } from '@/components/ProjectTeam';
+import { ClientContactsEditor } from '@/components/ClientContactsEditor';
+import { ProjectHealthPage } from '@/components/health/ProjectHealthPage';
+import { OrganizationHealthPage } from '@/components/health/OrganizationHealthPage';
+import { OverviewPage } from '@/components/portfolio/OverviewPage';
+import { ResourceAllocationPage } from '@/components/portfolio/ResourceAllocationPage';
 import {
   DateField,
   DropdownField,
   ReadOnlyStat,
   TextAreaField,
   TextField,
+  TextSuggestField,
 } from '@/components/FormFields';
 import { PersonPicker } from '@/components/PersonPicker';
 import {
@@ -39,6 +46,7 @@ import {
   StatusGlyph,
   MailGlyph,
   CodeGlyph,
+  TeamGlyph,
 } from '@/components/icons';
 import type { ProjectInformation } from '@/models/ProjectInformation';
 import type { ValidationField } from '@/models/ValidationResult';
@@ -59,10 +67,9 @@ import { formatTimestampForDisplay } from '@/utils/dateUtils';
 const useStyles = makeStyles({
   root: {
     width: '100%',
-    maxWidth: '1500px',
     boxSizing: 'border-box',
-    margin: '0 auto',
-    padding: `${tokens.spacingVerticalL} clamp(16px, 4vw, 44px) 40px`,
+    margin: 0,
+    padding: `${tokens.spacingVerticalL} clamp(16px, 3vw, 40px) 40px`,
   },
   subtle: { color: tokens.colorNeutralForeground3 },
   banners: {
@@ -72,8 +79,6 @@ const useStyles = makeStyles({
     marginBottom: tokens.spacingVerticalM,
   },
   footer: {
-    position: 'sticky',
-    bottom: tokens.spacingVerticalM,
     display: 'flex',
     alignItems: 'center',
     gap: tokens.spacingHorizontalM,
@@ -89,12 +94,107 @@ const useStyles = makeStyles({
   spacer: { flex: 1 },
 });
 
+/** Running extension version, shown in the footer so the loaded build is obvious. */
+function getExtensionVersion(): string {
+  if (import.meta.env.DEV) {
+    return 'dev';
+  }
+  try {
+    return SDK.getExtensionContext()?.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * Which page to render. Both the "Project Information" and "Project Health"
+ * hubs load this same bundle; the active contribution id decides the page. In
+ * local preview, `?page=health` selects the report.
+ */
+type ActivePage = 'info' | 'health' | 'org' | 'overview' | 'resource';
+
+function pageFromContributionId(id: string): ActivePage {
+  if (id.endsWith('organization-overview-hub')) return 'overview';
+  if (id.endsWith('organization-resource-hub')) return 'resource';
+  if (id.endsWith('organization-health-hub')) return 'org';
+  return id.endsWith('project-health-hub') ? 'health' : 'info';
+}
+
+/**
+ * Resolve which page to render. The contribution id is only available after the
+ * SDK handshake, so this waits for SDK.ready() before deciding — otherwise an
+ * org-level hub would briefly (and wrongly) bootstrap the project-scoped page
+ * and fail with "No project context". SDK.init is idempotent; the page
+ * components' own init/ready calls resolve immediately afterwards.
+ */
+function usePage(): ActivePage | null {
+  const [page, setPage] = useState<ActivePage | null>(null);
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      const p = new URLSearchParams(window.location.search).get('page');
+      setPage(
+        p === 'health' || p === 'org' || p === 'overview' || p === 'resource' ? p : 'info',
+      );
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        await SDK.init({ loaded: false, applyTheme: true });
+        await SDK.ready();
+        if (!cancelled) setPage(pageFromContributionId(SDK.getContributionId() ?? ''));
+      } catch (err) {
+        console.error('Failed to resolve the active page.', err);
+        if (!cancelled) setPage('info');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return page;
+}
+
 export function App() {
   const theme = useAdoTheme();
-  const { status, services, error, retry } = useProjectContext();
+  const page = usePage();
 
   return (
     <FluentProvider theme={theme} style={{ backgroundColor: 'transparent' }}>
+      {page === null ? (
+        <LoadingState label="Initializing…" />
+      ) : page === 'overview' ? (
+        <OverviewPage />
+      ) : page === 'resource' ? (
+        <ResourceAllocationPage />
+      ) : page === 'org' ? (
+        <OrganizationHealthPage />
+      ) : (
+        <ProjectApp page={page === 'health' ? 'health' : 'info'} />
+      )}
+    </FluentProvider>
+  );
+}
+
+/** Project-scoped bootstrap (Project Information + Project Health hubs). */
+function ProjectApp({ page }: { page: 'info' | 'health' }) {
+  const { status, services, error, retry } = useProjectContext();
+  const notified = useRef(false);
+
+  // Tell the host the page has loaded as soon as the context is ready. Without
+  // this the host keeps its loading overlay on top of our content ("taking
+  // longer than expected"). Skipped in local preview where the SDK is absent.
+  useEffect(() => {
+    if (!notified.current && status !== 'initializing') {
+      notified.current = true;
+      if (!import.meta.env.DEV) {
+        void SDK.notifyLoadSucceeded();
+      }
+    }
+  }, [status]);
+
+  return (
+    <>
       {status === 'initializing' && <LoadingState label="Initializing…" />}
       {status === 'error' && (
         <ErrorState
@@ -103,8 +203,14 @@ export function App() {
           onRetry={retry}
         />
       )}
-      {status === 'ready' && services && <ProjectForm services={services} />}
-    </FluentProvider>
+      {status === 'ready' &&
+        services &&
+        (page === 'health' ? (
+          <ProjectHealthPage services={services} />
+        ) : (
+          <ProjectForm services={services} />
+        ))}
+    </>
   );
 }
 
@@ -116,7 +222,8 @@ function ProjectForm({ services }: { services: AppServices }) {
     info,
     setInfo,
     isDirty,
-    permission,
+    isAdmin,
+    clientNameSuggestions,
     saveStatus,
     saveError,
     clearSaveStatus,
@@ -126,24 +233,13 @@ function ProjectForm({ services }: { services: AppServices }) {
   } = useProjectInformation(services);
 
   const [touched, setTouched] = useState<Set<ValidationField>>(new Set());
-  const notified = useRef(false);
 
-  useUnsavedChanges(isDirty && permission.canEdit);
-
-  // Notify the host exactly once the page has finished its initial load
-  // (successfully rendered content, whether data loaded or a retryable error).
-  useEffect(() => {
-    if (!notified.current && loadStatus !== 'loading') {
-      notified.current = true;
-      // In local preview mode the SDK is not initialized; skip the host notify.
-      if (!import.meta.env.DEV) {
-        void SDK.notifyLoadSucceeded();
-      }
-    }
-  }, [loadStatus]);
+  useUnsavedChanges(isDirty && isAdmin);
 
   const validation = useMemo(() => validateProjectInformation(info), [info]);
-  const readOnly = !permission.canEdit;
+  // Only Project Administrators may edit. Non-admins get a fully read-only form
+  // (Save/Reset disabled). Editing is additionally enforced server-side on save.
+  const readOnly = !isAdmin;
 
   const markTouched = useCallback((field: ValidationField) => {
     setTouched((prev) => {
@@ -212,7 +308,7 @@ function ProjectForm({ services }: { services: AppServices }) {
       <Hero projectName={services.context.project.name} info={info} />
 
       <div className={styles.banners}>
-        <PermissionBanner canEdit={permission.canEdit} checkFailed={permission.checkFailed} />
+        <PermissionBanner canEdit={isAdmin} checkFailed={false} />
 
         {saveStatus === 'success' && (
           <MessageBar intent="success" politeness="polite">
@@ -244,7 +340,7 @@ function ProjectForm({ services }: { services: AppServices }) {
           </MessageBar>
         )}
 
-        {isDirty && permission.canEdit && (
+        {isDirty && isAdmin && (
           <MessageBar intent="info" politeness="polite">
             <MessageBarBody>You have unsaved changes.</MessageBarBody>
           </MessageBar>
@@ -253,7 +349,7 @@ function ProjectForm({ services }: { services: AppServices }) {
 
       <StatStrip info={info} />
 
-      <Columns>
+      <Sections>
         <Column>
           {/* Project Identification */}
           <FormSection
@@ -262,13 +358,15 @@ function ProjectForm({ services }: { services: AppServices }) {
             glyph={<IdentificationGlyph />}
             tint="blue"
           >
-            <TextField
+            <TextSuggestField
               fieldId="clientName"
               label="Client Name"
               required
               disabled={readOnly}
               value={info.clientName}
+              suggestions={clientNameSuggestions}
               maxLength={FieldLimits.ClientName}
+              placeholder="Select an existing client or type a new one"
               error={errorFor('clientName')}
               onChange={(v) => update('clientName', v, 'clientName')}
             />
@@ -324,7 +422,6 @@ function ProjectForm({ services }: { services: AppServices }) {
             <DropdownField
               fieldId="projectHealth"
               label="Project Health"
-              required
               disabled={readOnly}
               value={info.projectHealth}
               options={PROJECT_HEALTH_OPTIONS}
@@ -343,6 +440,58 @@ function ProjectForm({ services }: { services: AppServices }) {
             />
           </FormSection>
 
+          {/* Client Contact */}
+          <FormSection
+            title="Client Contact"
+            caption="Up to three client-side contacts and the sponsor"
+            glyph={<MailGlyph />}
+            tint="amber"
+          >
+            {isAdmin ? (
+              <>
+                <ClientContactsEditor
+                  value={info.clientContacts}
+                  disabled={readOnly}
+                  error={errorFor('clientContacts')}
+                  onChange={(contacts) => update('clientContacts', contacts, 'clientContacts')}
+                />
+                <FullWidthField>
+                  <TextField
+                    fieldId="clientSponsor"
+                    label="Client Sponsor"
+                    disabled={readOnly}
+                    value={info.clientSponsor ?? ''}
+                    maxLength={200}
+                    placeholder="Client-side sponsor name"
+                    error={errorFor('clientSponsor')}
+                    onChange={(v) => update('clientSponsor', v, 'clientSponsor')}
+                  />
+                </FullWidthField>
+              </>
+            ) : (
+              <FullWidthField>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '14px 16px',
+                    borderRadius: 10,
+                    border: '1px dashed var(--pi-neutral-swatch)',
+                    color: 'var(--pi-neutral-swatch)',
+                  }}
+                >
+                  <span aria-hidden style={{ fontSize: 16 }}>
+                    🔒
+                  </span>
+                  <span>Client contact details are visible to project administrators only.</span>
+                </div>
+              </FullWidthField>
+            )}
+          </FormSection>
+        </Column>
+
+        <Column>
           {/* Project Ownership */}
           <FormSection
             title="Project Ownership"
@@ -362,7 +511,6 @@ function ProjectForm({ services }: { services: AppServices }) {
             <PersonPicker
               fieldId="deliveryManager"
               label="Delivery Manager"
-              required
               disabled={readOnly}
               identityService={services.identities}
               value={info.deliveryManager}
@@ -389,31 +537,19 @@ function ProjectForm({ services }: { services: AppServices }) {
             />
           </FormSection>
 
-          {/* Client Contact */}
+          {/* Project Team */}
           <FormSection
-            title="Client Contact"
-            caption="Primary point of contact"
-            glyph={<MailGlyph />}
-            tint="amber"
+            title="Project Team"
+            caption="Add the people working on this project and their roles"
+            glyph={<TeamGlyph />}
+            tint="violet"
           >
-            <TextField
-              fieldId="clientContactName"
-              label="Client Contact Name"
+            <ProjectTeam
+              value={info.team}
               disabled={readOnly}
-              value={info.clientContactName ?? ''}
-              maxLength={FieldLimits.ClientContactName}
-              error={errorFor('clientContactName')}
-              onChange={(v) => update('clientContactName', v, 'clientContactName')}
-            />
-            <TextField
-              fieldId="clientContactEmail"
-              label="Client Contact Email"
-              type="email"
-              disabled={readOnly}
-              value={info.clientContactEmail ?? ''}
-              maxLength={FieldLimits.ClientContactEmail}
-              error={errorFor('clientContactEmail')}
-              onChange={(v) => update('clientContactEmail', v, 'clientContactEmail')}
+              identityService={services.identities}
+              error={errorFor('team')}
+              onChange={(team) => update('team', team, 'team')}
             />
           </FormSection>
         </Column>
@@ -429,7 +565,6 @@ function ProjectForm({ services }: { services: AppServices }) {
             <DateField
               fieldId="projectStartDate"
               label="Project Start Date"
-              required
               disabled={readOnly}
               value={info.projectStartDate}
               error={errorFor('projectStartDate')}
@@ -526,7 +661,7 @@ function ProjectForm({ services }: { services: AppServices }) {
             </FullWidthField>
           </FormSection>
         </Column>
-      </Columns>
+      </Sections>
 
       <Divider />
       <Text size={200} className={styles.subtle} style={{ display: 'block', marginTop: 12 }}>
@@ -535,34 +670,37 @@ function ProjectForm({ services }: { services: AppServices }) {
               info.lastUpdatedBy ? ` by ${info.lastUpdatedBy.displayName}` : ''
             }.`
           : 'This project has no saved information yet.'}
+        {` · Extension v${getExtensionVersion()}`}
       </Text>
 
-      {!readOnly && (
-        <div className={styles.footer}>
-          <Button
-            appearance="primary"
-            icon={saving ? <Spinner size="tiny" /> : <SaveRegular />}
-            disabled={!canSave}
-            onClick={() => void handleSave()}
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
-          <Button
-            appearance="secondary"
-            icon={<ArrowUndoRegular />}
-            disabled={!isDirty || saving}
-            onClick={() => {
-              resetChanges();
-              setTouched(new Set());
-              clearSaveStatus();
-            }}
-          >
-            Reset changes
-          </Button>
-          <div className={styles.spacer} />
-          {isDirty && <Text className={styles.subtle}>Unsaved changes</Text>}
-        </div>
-      )}
+      <div className={styles.footer}>
+        <Button
+          appearance="primary"
+          icon={saving ? <Spinner size="tiny" /> : <SaveRegular />}
+          disabled={!canSave}
+          onClick={() => void handleSave()}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+        <Button
+          appearance="secondary"
+          icon={<ArrowUndoRegular />}
+          disabled={readOnly || !isDirty || saving}
+          onClick={() => {
+            resetChanges();
+            setTouched(new Set());
+            clearSaveStatus();
+          }}
+        >
+          Reset changes
+        </Button>
+        <div className={styles.spacer} />
+        {readOnly ? (
+          <Text className={styles.subtle}>Read-only — project administrators can edit.</Text>
+        ) : (
+          isDirty && <Text className={styles.subtle}>Unsaved changes</Text>
+        )}
+      </div>
     </div>
   );
 }

@@ -18,6 +18,8 @@ export interface RequestOptions {
   /** Whether transient failures should be retried. Default true. */
   retry?: boolean;
   apiVersion?: string;
+  /** Skip appending the api-version query param (e.g. Analytics OData paths). */
+  skipApiVersion?: boolean;
 }
 
 export interface PagedResult<T> {
@@ -41,7 +43,13 @@ export class AzureDevOpsClient {
     const timeoutMs = options.timeoutMs ?? 30_000;
     const doRetry = options.retry ?? true;
 
-    const url = this.buildUrl(baseUrl, path, options.query, options.apiVersion ?? API_VERSION);
+    const url = this.buildUrl(
+      baseUrl,
+      path,
+      options.query,
+      options.apiVersion ?? API_VERSION,
+      options.skipApiVersion ?? false,
+    );
 
     const perform = async (): Promise<Response> => {
       // Fetch a fresh token per attempt; the SDK caches and refreshes it.
@@ -161,11 +169,14 @@ export class AzureDevOpsClient {
     path: string,
     query: Record<string, string | number | undefined> | undefined,
     apiVersion: string,
+    skipApiVersion: boolean,
   ): string {
     const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
     const rel = path.startsWith('/') ? path.slice(1) : path;
     const url = new URL(`${base}/${rel}`);
-    url.searchParams.set('api-version', apiVersion);
+    if (!skipApiVersion) {
+      url.searchParams.set('api-version', apiVersion);
+    }
     if (query) {
       for (const [key, value] of Object.entries(query)) {
         if (value !== undefined && value !== null && value !== '') {

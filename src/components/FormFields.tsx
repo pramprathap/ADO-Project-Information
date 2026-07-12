@@ -1,6 +1,49 @@
 import { useId } from 'react';
-import { Badge, Dropdown, Field, Input, Option, Text, Textarea } from '@fluentui/react-components';
+import {
+  Badge,
+  Combobox,
+  Dropdown,
+  Field,
+  Input,
+  Option,
+  Text,
+  Textarea,
+  makeStyles,
+  tokens,
+} from '@fluentui/react-components';
 import type { DropdownOption } from '@/constants/dropdownOptions';
+
+const useSuggestStyles = makeStyles({
+  wrapper: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: tokens.spacingVerticalXXS,
+    minWidth: 0,
+    width: '100%',
+  },
+  label: { fontWeight: 600, fontSize: '13px', lineHeight: '18px' },
+  req: { color: 'var(--pi-danger)', marginLeft: '2px' },
+  hint: { color: 'var(--pi-neutral-swatch)', fontSize: '12px' },
+  error: { color: 'var(--pi-danger)', fontSize: '12px' },
+});
+
+const useDropdownStyles = makeStyles({
+  wrap: { position: 'relative' },
+  dot: {
+    position: 'absolute',
+    left: '12px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+    zIndex: 1,
+    pointerEvents: 'none',
+    boxShadow: '0 0 0 1px rgba(127,127,127,.35)',
+  },
+  // Push the selected value text right so the swatch has room.
+  padded: { '& button': { paddingInlineStart: '28px' } },
+});
 
 interface BaseFieldProps {
   label: string;
@@ -138,6 +181,83 @@ export function DateField({
   );
 }
 
+interface TextSuggestFieldProps extends BaseFieldProps {
+  value: string;
+  onChange: (value: string) => void;
+  /** Previously-used values offered as type-ahead suggestions. */
+  suggestions: string[];
+  maxLength?: number;
+  placeholder?: string;
+}
+
+/**
+ * A free-text field with type-ahead suggestions from a supplied list. The user
+ * can pick an existing value or type a new one (which the caller persists so it
+ * appears next time). Uses its own label + Combobox layout (not Fluent Field)
+ * to avoid the Field-wrapping-Combobox height/overlap issue.
+ */
+export function TextSuggestField({
+  label,
+  value,
+  onChange,
+  suggestions,
+  required,
+  disabled,
+  error,
+  hint,
+  maxLength,
+  placeholder,
+  fieldId,
+}: TextSuggestFieldProps) {
+  const styles = useSuggestStyles();
+  const generated = useId();
+  const id = fieldId ?? generated;
+  const query = (value ?? '').trim().toLowerCase();
+  const matches = (
+    query ? suggestions.filter((s) => s.toLowerCase().includes(query)) : suggestions
+  ).slice(0, 8);
+
+  return (
+    <div className={styles.wrapper}>
+      <label className={styles.label} htmlFor={id}>
+        {label}
+        {required && (
+          <span className={styles.req} aria-hidden>
+            *
+          </span>
+        )}
+      </label>
+      <Combobox
+        id={id}
+        freeform
+        clearable
+        disabled={disabled}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) =>
+          onChange(
+            (e.target as HTMLInputElement).value.slice(0, maxLength ?? Number.MAX_SAFE_INTEGER),
+          )
+        }
+        onOptionSelect={(_e, data) => {
+          if (typeof data.optionValue === 'string') {
+            onChange(data.optionValue);
+          }
+        }}
+        aria-label={label}
+      >
+        {matches.map((s) => (
+          <Option key={s} value={s} text={s}>
+            {s}
+          </Option>
+        ))}
+      </Combobox>
+      {hint && !error && <span className={styles.hint}>{hint}</span>}
+      {error && <span className={styles.error}>{error}</span>}
+    </div>
+  );
+}
+
 interface ReadOnlyStatProps {
   label: string;
   value: string;
@@ -184,7 +304,10 @@ export function DropdownField<T extends string>({
 }: DropdownFieldProps<T>) {
   const generated = useId();
   const id = fieldId ?? generated;
-  const selectedText = options.find((o) => o.value === value)?.label ?? '';
+  const styles = useDropdownStyles();
+  const selected = options.find((o) => o.value === value);
+  const selectedText = selected?.label ?? '';
+  const selectedColor = selected?.color;
   return (
     <Field
       label={label}
@@ -193,40 +316,46 @@ export function DropdownField<T extends string>({
       validationMessage={error}
       hint={hint}
     >
-      <Dropdown
-        id={id}
-        disabled={disabled}
-        placeholder={placeholder}
-        value={selectedText}
-        selectedOptions={value ? [value] : []}
-        onOptionSelect={(_e, data) => onChange((data.optionValue as T) ?? '')}
-      >
-        {allowEmpty && (
-          <Option value="" text="— None —">
-            — None —
-          </Option>
+      <div className={styles.wrap}>
+        {selectedColor && (
+          <span aria-hidden className={styles.dot} style={{ backgroundColor: selectedColor }} />
         )}
-        {options.map((option) => (
-          <Option key={option.value} value={option.value} text={option.label}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              {option.color && (
-                <span
-                  aria-hidden
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: '50%',
-                    backgroundColor: option.color,
-                    flex: 'none',
-                    boxShadow: '0 0 0 1px rgba(127,127,127,.35)',
-                  }}
-                />
-              )}
-              {option.label}
-            </span>
-          </Option>
-        ))}
-      </Dropdown>
+        <Dropdown
+          id={id}
+          className={selectedColor ? styles.padded : undefined}
+          disabled={disabled}
+          placeholder={placeholder}
+          value={selectedText}
+          selectedOptions={value ? [value] : []}
+          onOptionSelect={(_e, data) => onChange((data.optionValue as T) ?? '')}
+        >
+          {allowEmpty && (
+            <Option value="" text="— None —">
+              — None —
+            </Option>
+          )}
+          {options.map((option) => (
+            <Option key={option.value} value={option.value} text={option.label}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                {option.color && (
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: '50%',
+                      backgroundColor: option.color,
+                      flex: 'none',
+                      boxShadow: '0 0 0 1px rgba(127,127,127,.35)',
+                    }}
+                  />
+                )}
+                {option.label}
+              </span>
+            </Option>
+          ))}
+        </Dropdown>
+      </div>
     </Field>
   );
 }

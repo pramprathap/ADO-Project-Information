@@ -27,6 +27,10 @@ export interface UseProjectInformationResult {
   setInfo: (updater: (prev: ProjectInformation) => ProjectInformation) => void;
   isDirty: boolean;
   permission: EditPermission;
+  /** Whether the viewer is a Project Administrator (for masking sensitive data). */
+  isAdmin: boolean;
+  /** Org-wide client names for the Client Name type-ahead. */
+  clientNameSuggestions: string[];
   saveStatus: SaveStatus;
   saveError: string | null;
   clearSaveStatus: () => void;
@@ -58,6 +62,10 @@ export function useProjectInformation(services: AppServices): UseProjectInformat
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [clientNameSuggestions, setClientNameSuggestions] = useState<string[]>([]);
+  // Masking of sensitive sections defaults to hidden until the async admin
+  // check confirms the viewer is a Project Administrator (fails open on error).
+  const [isAdmin, setIsAdmin] = useState(false);
 
   /** The last property bag read from the server, used to diff on save. */
   const existingBag = useRef<PropertyBag>({});
@@ -65,17 +73,25 @@ export function useProjectInformation(services: AppServices): UseProjectInformat
   useEffect(() => {
     let cancelled = false;
 
-    async function resolvePeople(loaded: ProjectInformation): Promise<ProjectInformation> {
-      const next = clone(loaded);
-      await Promise.all(
-        PERSON_KEYS.map(async (key) => {
-          const current = loaded[key] as AzureDevOpsIdentity | null;
-          if (current && current.descriptor) {
-            const resolved = await services.identities.resolveByDescriptor(current);
-            (next[key] as AzureDevOpsIdentity | null) = resolved;
-          }
-        }),
-      );
+    /**
+     * Merge freshly-resolved person details into a record WITHOUT marking the
+     * form dirty: a person field is only replaced when it still matches the
+     * value loaded from the server (i.e. the user has not changed it).
+     */
+    function mergeResolvedPeople(
+      target: ProjectInformation,
+      base: ProjectInformation,
+      resolved: Partial<Record<(typeof PERSON_KEYS)[number], AzureDevOpsIdentity | null>>,
+    ): ProjectInformation {
+      const next = clone(target);
+      for (const key of PERSON_KEYS) {
+        const baseId = base[key] as AzureDevOpsIdentity | null;
+        const targetId = target[key] as AzureDevOpsIdentity | null;
+        const sameAsLoaded = (baseId?.descriptor ?? '') === (targetId?.descriptor ?? '');
+        if (sameAsLoaded && key in resolved) {
+          (next[key] as AzureDevOpsIdentity | null) = resolved[key] ?? null;
+        }
+      }
       return next;
     }
 
@@ -83,7 +99,7 @@ export function useProjectInformation(services: AppServices): UseProjectInformat
       setLoadStatus('loading');
       setLoadError(null);
       try {
-        // Permission check and property load run concurrently.
+        // Critical path: only the permission flag and the stored properties.
         const [perm, bag] = await Promise.all([
           services.permissions.canEditProjectInformation(),
           services.properties.load(),
@@ -93,14 +109,40 @@ export function useProjectInformation(services: AppServices): UseProjectInformat
         }
         existingBag.current = bag;
         const parsed = fromProperties(bag);
-        const withPeople = await resolvePeople(parsed);
-        if (cancelled) {
-          return;
-        }
         setPermission(perm);
-        setInfoState(withPeople);
-        setOriginal(clone(withPeople));
+        setInfoState(parsed);
+        setOriginal(clone(parsed));
+        // Render immediately with the stored data (person names/emails are in
+        // the properties), so the host stops showing the loading indicator.
         setLoadStatus('loaded');
+
+        // Non-blocking enrichment: refresh identities (avatar/active state),
+        // load client-name suggestions, and determine admin status for masking.
+        void (async () => {
+          const [resolvedPeople, clientNames, admin] = await Promise.all([
+            Promise.all(
+              PERSON_KEYS.map(async (key) => {
+                const current = parsed[key] as AzureDevOpsIdentity | null;
+                if (current && current.descriptor) {
+                  return [key, await services.identities.resolveByDescriptor(current)] as const;
+                }
+                return [key, current] as const;
+              }),
+            ),
+            services.clientDirectory.getClientNames().catch(() => [] as string[]),
+            services.permissions.isProjectAdministrator().catch(() => true),
+          ]);
+          if (cancelled) {
+            return;
+          }
+          const resolvedMap = Object.fromEntries(resolvedPeople) as Partial<
+            Record<(typeof PERSON_KEYS)[number], AzureDevOpsIdentity | null>
+          >;
+          setClientNameSuggestions(clientNames);
+          setIsAdmin(admin);
+          setInfoState((prev) => mergeResolvedPeople(prev, parsed, resolvedMap));
+          setOriginal((prev) => mergeResolvedPeople(prev, parsed, resolvedMap));
+        })();
       } catch (err) {
         console.error('Failed to load project information.', err);
         if (!cancelled) {
@@ -180,6 +222,17 @@ export function useProjectInformation(services: AppServices): UseProjectInformat
       setInfoState(toSave);
       setOriginal(clone(toSave));
       setSaveStatus('success');
+
+      // Remember the client name in the shared directory for future type-ahead.
+      const savedClient = toSave.clientName.trim();
+      if (savedClient) {
+        void services.clientDirectory.addClientName(savedClient);
+        setClientNameSuggestions((prev) =>
+          prev.some((n) => n.toLowerCase() === savedClient.toLowerCase())
+            ? prev
+            : [...prev, savedClient].sort((a, b) => a.localeCompare(b)),
+        );
+      }
       return true;
     } catch (err) {
       console.error('Failed to save project information.', err);
@@ -203,6 +256,8 @@ export function useProjectInformation(services: AppServices): UseProjectInformat
     setInfo,
     isDirty,
     permission,
+    isAdmin,
+    clientNameSuggestions,
     saveStatus,
     saveError,
     clearSaveStatus,

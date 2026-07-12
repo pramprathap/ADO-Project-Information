@@ -76,10 +76,13 @@ export interface ProjectInformation {
   purchaseOrderNumber?: string;
 
   // F. Client Information
-  clientContactName?: string;
-  clientContactEmail?: string;
+  clientContacts: ClientContact[];
+  clientSponsor?: string;
   clientRegion: ClientRegion | '';
   internalSponsor: AzureDevOpsIdentity | null;
+
+  // Project team (variable-length list of role + person)
+  team: TeamMember[];
 
   // G. Technical Information
   technologyStack?: string;
@@ -92,6 +95,21 @@ export interface ProjectInformation {
   lastUpdatedAt?: string;
   lastUpdatedBy?: AzureDevOpsIdentity;
 }
+
+/** A single project-team assignment: a role held by an Azure DevOps identity. */
+export interface TeamMember {
+  role: string;
+  identity: AzureDevOpsIdentity | null;
+}
+
+/** A client-side point of contact (free text — not an Azure DevOps identity). */
+export interface ClientContact {
+  name: string;
+  email: string;
+}
+
+/** Maximum number of client contacts that can be captured. */
+export const MAX_CLIENT_CONTACTS = 3;
 
 /** A blank record used for newly-created projects with no stored properties. */
 export function createEmptyProjectInformation(): ProjectInformation {
@@ -114,10 +132,11 @@ export function createEmptyProjectInformation(): ProjectInformation {
     billingType: undefined,
     contractType: undefined,
     purchaseOrderNumber: '',
-    clientContactName: '',
-    clientContactEmail: '',
+    clientContacts: [],
+    clientSponsor: '',
     clientRegion: '',
     internalSponsor: null,
+    team: [],
     technologyStack: '',
     repositorySource: undefined,
     repositoryUrl: '',

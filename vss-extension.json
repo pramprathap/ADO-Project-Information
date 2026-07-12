@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "veelead-project-information",
   "publisher": "PRamprathap",
-  "version": "1.0.6",
+  "version": "1.5.0",
   "name": "Project Information",
   "description": "Maintain structured, project-scoped information under Project Settings. Data is stored per project using the official Azure DevOps project-properties API.",
   "public": false,
@@ -26,7 +26,7 @@
       "id": "Microsoft.VisualStudio.Services"
     }
   ],
-  "scopes": ["vso.project", "vso.project_write", "vso.graph"],
+  "scopes": ["vso.project", "vso.project_write", "vso.graph", "vso.work"],
   "demands": ["api-version/7.1"],
   "contributions": [
     {
@@ -37,6 +37,63 @@
       "properties": {
         "name": "Project Information",
         "order": 100,
+        "uri": "dist/project-information.html",
+        "icon": "public/icons/extension-icon.png"
+      }
+    },
+    {
+      "id": "project-health-hub",
+      "type": "ms.vss-web.hub",
+      "description": "Project Health report page under Project Settings.",
+      "targets": ["ms.vss-web.project-admin-hub-group"],
+      "properties": {
+        "name": "Project Health",
+        "order": 101,
+        "uri": "dist/project-information.html",
+        "icon": "public/icons/extension-icon.png"
+      }
+    },
+    {
+      "id": "organization-overview-hub",
+      "type": "ms.vss-web.hub",
+      "description": "Organization-wide portfolio Overview across all projects.",
+      "targets": [
+        "ms.vss-web.collection-admin-hub-group",
+        "ms.vss-web.organization-admin-hub-group"
+      ],
+      "properties": {
+        "name": "Portfolio Overview",
+        "order": 89,
+        "uri": "dist/project-information.html",
+        "icon": "public/icons/extension-icon.png"
+      }
+    },
+    {
+      "id": "organization-resource-hub",
+      "type": "ms.vss-web.hub",
+      "description": "Organization-wide Resource Allocation (capacity vs allocation).",
+      "targets": [
+        "ms.vss-web.collection-admin-hub-group",
+        "ms.vss-web.organization-admin-hub-group"
+      ],
+      "properties": {
+        "name": "Resource Allocation",
+        "order": 91,
+        "uri": "dist/project-information.html",
+        "icon": "public/icons/extension-icon.png"
+      }
+    },
+    {
+      "id": "organization-health-hub",
+      "type": "ms.vss-web.hub",
+      "description": "Organization-wide Project Health report with a project picker.",
+      "targets": [
+        "ms.vss-web.collection-admin-hub-group",
+        "ms.vss-web.organization-admin-hub-group"
+      ],
+      "properties": {
+        "name": "Project Health",
+        "order": 90,
         "uri": "dist/project-information.html",
         "icon": "public/icons/extension-icon.png"
       }

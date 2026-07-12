@@ -1,43 +1,9 @@
-import { AzureDevOpsClient } from './AzureDevOpsClient';
-import { ApiError } from './errors';
+import type {
+  GraphRestClient,
+  GraphUser,
+  GraphSubjectQuery,
+} from 'azure-devops-extension-api/Graph';
 import type { AzureDevOpsIdentity } from '@/models/AzureDevOpsIdentity';
-
-// ---- Identity Picker API (searches the org + Entra ID / AAD directory) -------
-
-interface IdentityPickerIdentity {
-  entityId?: string;
-  displayName?: string;
-  mail?: string;
-  signInAddress?: string;
-  samAccountName?: string;
-  subjectDescriptor?: string;
-  active?: boolean;
-  entityType?: string; // "User" | "Group" | ...
-  originDirectory?: string; // "aad" | "vsd" | ...
-  image?: string;
-  description?: string;
-}
-
-interface IdentityPickerResponse {
-  results?: { queryToken?: string; identities?: IdentityPickerIdentity[] }[];
-}
-
-// ---- Graph API (used to re-resolve a stored descriptor on load) --------------
-
-interface GraphUser {
-  descriptor?: string;
-  displayName?: string;
-  mailAddress?: string;
-  principalName?: string;
-  subjectKind?: string;
-  metaType?: string;
-  _links?: { avatar?: { href?: string } };
-}
-
-interface GraphSubjectQueryResponse {
-  count: number;
-  value: GraphUser[];
-}
 
 /**
  * Case-insensitive patterns for Azure DevOps service / build accounts that
@@ -57,32 +23,6 @@ function isLikelyServiceAccount(name: string, principal: string): boolean {
   return SERVICE_ACCOUNT_PATTERNS.some((re) => re.test(name) || re.test(principal));
 }
 
-function fromPickerIdentity(id: IdentityPickerIdentity): AzureDevOpsIdentity | null {
-  // The canonical stored id is the Graph subject descriptor. Skip entries that
-  // do not expose one (they cannot be reliably re-resolved later).
-  const descriptor = id.subjectDescriptor;
-  if (!descriptor) {
-    return null;
-  }
-  const email = id.mail || id.signInAddress || undefined;
-  const identity: AzureDevOpsIdentity = {
-    descriptor,
-    displayName: id.displayName || id.signInAddress || id.mail || descriptor,
-    isActive: id.active !== false,
-  };
-  if (email) {
-    identity.email = email;
-  }
-  const principal = id.signInAddress || id.mail;
-  if (principal) {
-    identity.principalName = principal;
-  }
-  if (id.image) {
-    identity.imageUrl = id.image;
-  }
-  return identity;
-}
-
 function fromGraphUser(user: GraphUser, isActive: boolean): AzureDevOpsIdentity | null {
   if (!user.descriptor) {
     return null;
@@ -98,7 +38,7 @@ function fromGraphUser(user: GraphUser, isActive: boolean): AzureDevOpsIdentity 
   if (user.principalName) {
     identity.principalName = user.principalName;
   }
-  const avatar = user._links?.avatar?.href;
+  const avatar = user._links?.avatar?.href as string | undefined;
   if (avatar) {
     identity.imageUrl = avatar;
   }
@@ -106,26 +46,36 @@ function fromGraphUser(user: GraphUser, isActive: boolean): AzureDevOpsIdentity 
 }
 
 /**
- * Searches and resolves Azure DevOps / Entra ID identities.
+ * Searches and resolves Azure DevOps identities via the official
+ * `azure-devops-extension-api` Graph REST client (`getClient(GraphRestClient)`).
  *
- * Search uses the **Identity Picker** service — the same API that powers Azure
- * DevOps' own people pickers — with `operationScopes: ["ims", "source"]` so it
- * queries both the organisation (IMS) and the backing **Entra ID (AAD)
- * directory**. This finds users by name or email, including directory users, so
- * the picker behaves like the native ADO identity control.
+ * Using the SDK's own client (rather than a hand-rolled fetch) means requests
+ * are authenticated and routed the way Azure DevOps expects from inside the
+ * extension iframe, which avoids the CORS / 401 failures that a raw
+ * cross-origin fetch to the identity/graph services hits.
  *
- *   POST {org}/_apis/IdentityPicker/Identities   (search-as-you-type)
- *   GET  {graph}/_apis/graph/users/{descriptor}  (reload a stored identity)
- *
- * If the Identity Picker call fails, it falls back to the Graph subjectQuery API
- * (organisation members only).
+ *   querySubjects({ query, subjectKind: ['User'] })  — search organisation users
+ *   getUser(descriptor)                              — reload a stored identity
  */
 export class IdentityService {
-  constructor(
-    private readonly client: AzureDevOpsClient,
-    private readonly orgBaseUrl: string,
-    private readonly graphBaseUrl: string,
-  ) {}
+  private clientInstance: GraphRestClient | undefined;
+
+  /**
+   * Lazily load and construct the Graph client. The `azure-devops-extension-api`
+   * module is imported dynamically (not at startup) so its module-scope code
+   * only runs once the SDK is ready and never during local preview — a static
+   * import would execute before SDK.init and blank the page.
+   */
+  private async getGraphClient(): Promise<GraphRestClient> {
+    if (!this.clientInstance) {
+      const [{ getClient }, { GraphRestClient }] = await Promise.all([
+        import('azure-devops-extension-api'),
+        import('azure-devops-extension-api/Graph'),
+      ]);
+      this.clientInstance = getClient(GraphRestClient);
+    }
+    return this.clientInstance;
+  }
 
   async searchUsers(query: string, limit = 25): Promise<AzureDevOpsIdentity[]> {
     const trimmed = query.trim();
@@ -133,114 +83,42 @@ export class IdentityService {
       return [];
     }
 
-    try {
-      const results = await this.searchViaIdentityPicker(trimmed, limit);
-      if (results.length > 0) {
-        return results;
-      }
-    } catch (err) {
-      console.warn('Identity Picker search failed; falling back to Graph subjectQuery.', err);
-    }
+    const client = await this.getGraphClient();
+    // Only `query` and `subjectKind` are meaningful here; the remaining
+    // GraphSubjectQuery fields are optional in practice, so we assert the type.
+    const subjectQuery = { query: trimmed, subjectKind: ['User'] } as GraphSubjectQuery;
+    const subjects = (await client.querySubjects(subjectQuery)) as GraphUser[];
 
-    // Fallback: organisation members via Graph.
-    try {
-      return await this.searchViaGraph(trimmed, limit);
-    } catch (err) {
-      console.error('Graph identity search failed.', err);
-      throw err;
-    }
-  }
-
-  private async searchViaIdentityPicker(
-    query: string,
-    limit: number,
-  ): Promise<AzureDevOpsIdentity[]> {
-    const response = await this.client.request<IdentityPickerResponse>(
-      this.orgBaseUrl,
-      '_apis/IdentityPicker/Identities',
-      {
-        method: 'POST',
-        apiVersion: '5.0-preview.1',
-        body: {
-          query,
-          identityTypes: ['user'],
-          // "ims" = this organisation, "source" = backing Entra ID directory.
-          operationScopes: ['ims', 'source'],
-          properties: [
-            'DisplayName',
-            'Mail',
-            'SignInAddress',
-            'SamAccountName',
-            'Active',
-            'SubjectDescriptor',
-          ],
-          options: { MinResults: 5, MaxResults: Math.max(limit, 10) },
-        },
-      },
-    );
-
-    const identities = (response?.results ?? []).flatMap((r) => r.identities ?? []);
-    const out: AzureDevOpsIdentity[] = [];
-    for (const raw of identities) {
-      if (raw.entityType && raw.entityType.toLowerCase() !== 'user') {
+    const results: AzureDevOpsIdentity[] = [];
+    for (const subject of subjects ?? []) {
+      if (isLikelyServiceAccount(subject.displayName ?? '', subject.principalName ?? '')) {
         continue;
       }
-      if (isLikelyServiceAccount(raw.displayName ?? '', raw.signInAddress ?? raw.mail ?? '')) {
-        continue;
-      }
-      const identity = fromPickerIdentity(raw);
+      const identity = fromGraphUser(subject, true);
       if (identity) {
-        out.push(identity);
+        results.push(identity);
       }
-      if (out.length >= limit) {
+      if (results.length >= limit) {
         break;
       }
     }
-    return out;
-  }
-
-  private async searchViaGraph(query: string, limit: number): Promise<AzureDevOpsIdentity[]> {
-    const response = await this.client.request<GraphSubjectQueryResponse>(
-      this.graphBaseUrl,
-      '_apis/graph/subjectquery',
-      { method: 'POST', body: { query, subjectKind: ['User'] } },
-    );
-    const users = Array.isArray(response?.value) ? response.value : [];
-    const out: AzureDevOpsIdentity[] = [];
-    for (const user of users) {
-      if (user.subjectKind && user.subjectKind.toLowerCase() !== 'user') {
-        continue;
-      }
-      if (isLikelyServiceAccount(user.displayName ?? '', user.principalName ?? '')) {
-        continue;
-      }
-      const identity = fromGraphUser(user, true);
-      if (identity) {
-        out.push(identity);
-      }
-      if (out.length >= limit) {
-        break;
-      }
-    }
-    return out;
+    return results;
   }
 
   /**
    * Re-resolve a stored identity by its descriptor when the page loads. Returns
    * the identity with `isActive: false` (preserving the stored display
-   * name/email) when the user has been removed/disabled (HTTP 404).
+   * name/email) when the user has been removed / disabled (HTTP 404).
    */
   async resolveByDescriptor(stored: AzureDevOpsIdentity): Promise<AzureDevOpsIdentity> {
     try {
-      const user = await this.client.request<GraphUser>(
-        this.graphBaseUrl,
-        `_apis/graph/users/${encodeURIComponent(stored.descriptor)}`,
-        { method: 'GET' },
-      );
+      const client = await this.getGraphClient();
+      const user = await client.getUser(stored.descriptor);
       const resolved = fromGraphUser(user, true);
       return resolved ?? { ...stored, isActive: false };
     } catch (err) {
-      if (err instanceof ApiError && err.kind === 'notFound') {
+      const status = (err as { status?: number } | undefined)?.status;
+      if (status === 404) {
         return { ...stored, isActive: false };
       }
       console.warn('Failed to resolve identity by descriptor; using stored value.', err);

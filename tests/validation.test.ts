@@ -30,11 +30,15 @@ describe('required-field validation', () => {
     const result = validateProjectInformation(createEmptyProjectInformation());
     expect(result.isValid).toBe(false);
     expect(result.errors.clientName).toBeDefined();
-    expect(result.errors.deliveryManager).toBeDefined();
-    expect(result.errors.projectStartDate).toBeDefined();
     expect(result.errors.projectStatus).toBeDefined();
-    expect(result.errors.projectHealth).toBeDefined();
     expect(result.errors.clientRegion).toBeDefined();
+  });
+
+  it('does not require project start date, delivery manager or project health', () => {
+    const result = validateProjectInformation(createEmptyProjectInformation());
+    expect(result.errors.projectStartDate).toBeUndefined();
+    expect(result.errors.deliveryManager).toBeUndefined();
+    expect(result.errors.projectHealth).toBeUndefined();
   });
 
   it('passes a fully valid record', () => {
@@ -107,12 +111,16 @@ describe('email validation', () => {
 
   it('flags an invalid client contact email but allows an empty one', () => {
     expect(
-      validateProjectInformation({ ...validRecord(), clientContactEmail: 'bad' }).errors
-        .clientContactEmail,
+      validateProjectInformation({
+        ...validRecord(),
+        clientContacts: [{ name: 'A', email: 'bad' }],
+      }).errors.clientContacts,
     ).toBeDefined();
     expect(
-      validateProjectInformation({ ...validRecord(), clientContactEmail: '' }).errors
-        .clientContactEmail,
+      validateProjectInformation({
+        ...validRecord(),
+        clientContacts: [{ name: 'A', email: '' }],
+      }).errors.clientContacts,
     ).toBeUndefined();
   });
 });

@@ -41,42 +41,31 @@ const useStyles = makeStyles({
     textTransform: 'uppercase',
   },
   title: {
-    fontSize: 'clamp(24px, 3vw, 32px)',
-    fontWeight: 700,
+    fontSize: 'clamp(26px, 3.4vw, 38px)',
+    fontWeight: 800,
     letterSpacing: '-0.02em',
-    margin: '10px 0 6px',
+    margin: '8px 0 4px',
     textWrap: 'balance',
   },
-  desc: { color: tokens.colorNeutralForeground2, margin: '0 0 14px', maxWidth: '60ch' },
-  chip: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: tokens.spacingHorizontalSNudge,
-    padding: '7px 14px',
-    borderRadius: '999px',
-    backgroundColor: 'var(--pi-accent-soft)',
-    color: 'var(--pi-accent)',
+  subtitle: {
+    color: tokens.colorNeutralForeground2,
+    fontSize: '14px',
     fontWeight: 600,
+    letterSpacing: '0.02em',
   },
-  chipDot: { width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'currentColor' },
   gauge: { display: 'flex', alignItems: 'center', gap: '16px' },
   ring: {
-    width: '96px',
-    height: '96px',
+    width: '84px',
+    height: '84px',
     borderRadius: '50%',
     flex: 'none',
     display: 'grid',
     placeItems: 'center',
-    position: 'relative',
-    '::after': {
-      content: '""',
-      position: 'absolute',
-      inset: '9px',
-      borderRadius: '50%',
-      backgroundColor: tokens.colorNeutralBackground1,
-    },
+    textAlign: 'center',
+    padding: '6px',
+    boxSizing: 'border-box',
   },
-  ringLabel: { position: 'relative', zIndex: 1, fontSize: '12px', fontWeight: 700 },
+  ringLabel: { fontSize: '12px', fontWeight: 800, color: '#ffffff', lineHeight: 1.1 },
   gLabel: {
     fontSize: '12px',
     color: tokens.colorNeutralForeground3,
@@ -92,8 +81,6 @@ const HEALTH_COLOR: Record<string, string> = {
   Red: 'var(--pi-danger)',
 };
 
-const HEALTH_PERCENT: Record<string, number> = { Green: 90, Amber: 55, Red: 22 };
-
 const HEALTH_CAPTION: Record<string, string> = {
   Green: 'ON TRACK',
   Amber: 'AT RISK',
@@ -108,7 +95,6 @@ export function Hero({ projectName, info }: { projectName: string; info: Project
   const styles = useStyles();
   const health = info.projectHealth || '';
   const color = HEALTH_COLOR[health] ?? 'var(--pi-ring-track)';
-  const percent = HEALTH_PERCENT[health] ?? 0;
 
   return (
     <div className={styles.hero}>
@@ -118,26 +104,17 @@ export function Hero({ projectName, info }: { projectName: string; info: Project
           Project Settings · Delivery Record
         </div>
         <Text as="h1" block className={styles.title}>
+          {projectName}
+        </Text>
+        <Text as="p" block className={styles.subtitle}>
           Project Information
         </Text>
-        <Text as="p" block className={styles.desc}>
-          A single, governed home for the client, ownership, timeline and delivery health of this
-          Azure DevOps project.
-        </Text>
-        <span className={styles.chip}>
-          <span className={styles.chipDot} />
-          {projectName}
-        </span>
       </div>
 
       <div className={styles.gauge}>
-        <div
-          className={styles.ring}
-          style={{ background: `conic-gradient(${color} ${percent}%, var(--pi-ring-track) 0)` }}
-        >
-          <span className={styles.ringLabel} style={{ color }}>
-            {health ? HEALTH_CAPTION[health] : '—'}
-          </span>
+        {/* Single solid colour reflecting overall health (no progress-style arc). */}
+        <div className={styles.ring} style={{ backgroundColor: color }}>
+          <span className={styles.ringLabel}>{health ? HEALTH_CAPTION[health] : '—'}</span>
         </div>
         <div>
           <div className={styles.gLabel}>Overall health</div>
