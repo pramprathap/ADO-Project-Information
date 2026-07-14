@@ -32,11 +32,16 @@ export function MOCK_RESOURCE_DATA(period: Period): ResourceData {
     const capacityHrs = nDays * 8;
     const allocatedHrs = Math.round(byProject.reduce((a, b) => a + b.total, 0) * 10) / 10;
     const effective = Math.max(1, capacityHrs - s.leave);
+    // Spread the seed's leave onto whole days from the start of the period.
+    const leaveByDay = Array.from({ length: nDays }, (_, i) =>
+      Math.min(8, Math.max(0, s.leave - i * 8)),
+    );
     return {
       name: s.name,
       role: s.role,
       capacityHrs,
       leaveHrs: s.leave,
+      leaveByDay,
       allocatedHrs,
       utilPct: Math.round((allocatedHrs / effective) * 100),
       byDay,
@@ -51,6 +56,8 @@ export function MOCK_RESOURCE_DATA(period: Period): ResourceData {
         hrs: bp.total,
         day: bp.day,
       })),
+      unscheduled: [],
+      unscheduledHrs: 0,
       timesheetHrs: 0,
     };
   });

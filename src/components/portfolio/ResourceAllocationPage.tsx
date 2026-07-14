@@ -14,8 +14,12 @@ import {
   type ResourcePerson,
 } from '@/services/resourceService';
 import { MOCK_RESOURCE_DATA } from '@/services/mockResource';
-import { GraphLeaveProvider, GraphTimesheetProvider } from '@/services/sharePointProviders';
-import { getGraphTokenInteractive, isSharePointConfigured } from '@/services/graphClient';
+import {
+  GraphEmployeeProvider,
+  GraphLeaveProvider,
+  GraphTimesheetProvider,
+} from '@/services/sharePointProviders';
+import { getGraphTokenInteractive, getRedirectUri, isSharePointConfigured } from '@/services/graphClient';
 import { ProgressLoader } from './ProgressLoader';
 import { MultiSelect } from './MultiSelect';
 import { useVlDark, vlCanvasClass } from './vlTheme';
@@ -129,9 +133,18 @@ export function ResourceAllocationPage() {
         setProgress({ done: 0, total: projects.length });
         const leave = new GraphLeaveProvider(loginHintRef.current);
         const timesheet = new GraphTimesheetProvider(loginHintRef.current);
-        const result = await loadResourceData(org, projects, period, leave, timesheet, (d, t) => {
-          if (!cancelled) setProgress({ done: d, total: t });
-        });
+        const employees = new GraphEmployeeProvider(loginHintRef.current);
+        const result = await loadResourceData(
+          org,
+          projects,
+          period,
+          leave,
+          timesheet,
+          (d, t) => {
+            if (!cancelled) setProgress({ done: d, total: t });
+          },
+          employees,
+        );
         if (!cancelled) {
           setData(result);
           setSpNeedsAuth(
@@ -254,14 +267,29 @@ function ResourceBody({
 }) {
   const dark = useVlDark();
   const [resSel, setResSel] = useState<string[]>([]);
-  const [dayIdx, setDayIdx] = useState(0);
   const [breakdown, setBreakdown] = useState<{ person: string; colIdx: number | null } | null>(null);
 
   const period = data.period;
   const isCurrent = mode === 'current';
   const capLabel = mode === 'month' ? 'per month' : isCurrent ? 'this week · day-wise' : 'selected week · day-wise';
-  const colNoun = mode === 'month' ? 'month' : 'day';
   const subNoun = mode === 'month' ? 'week' : 'day';
+  const periodNoun = mode === 'month' ? 'month' : 'week';
+
+  /**
+   * Weekly columns for the capacity matrix: in By-month mode the period already
+   * has 4 calendar-week columns; week/current modes collapse to a single week.
+   * `colIdx` points back into period.cols so the breakdown drill-in still works
+   * (null = whole period).
+   */
+  const weeks = useMemo(
+    (): { label: string; idx: number[]; colIdx: number | null }[] => {
+      if (period.mode === 'month') {
+        return period.cols.map((c, i) => ({ label: c.label, idx: c.idx, colIdx: i }));
+      }
+      return [{ label: `Week of ${period.label}`, idx: period.days.map((_, i) => i), colIdx: null }];
+    },
+    [period],
+  );
 
   const allNames = useMemo(() => data.people.map((p) => p.name), [data]);
   const people = useMemo(
@@ -286,8 +314,109 @@ function ResourceBody({
     return cap > 0 ? Math.round((hrs / cap) * 100) : 0;
   };
 
+  /** The work-items-behind-a-load breakdown, rendered beside the weekly matrix. */
+  const breakdownPanel = (() => {
+    if (!breakdown) return null;
+    const person = people.find((p) => p.name === breakdown.person);
+    if (!person) return null;
+    const col = breakdown.colIdx !== null ? period.cols[breakdown.colIdx] : null;
+    const periodWord = mode === 'month' ? 'month' : 'week';
+    const label = col ? col.label : `whole ${periodWord}`;
+    const hrsOf = (it: AllocItem): number =>
+      col ? Math.round(col.idx.reduce((a, i) => a + (it.day[i] ?? 0), 0) * 10) / 10 : it.hrs;
+    const rows = person.items.filter((it) => hrsOf(it) > 0).sort((a, b) => hrsOf(b) - hrsOf(a));
+    const total = Math.round(rows.reduce((a, it) => a + hrsOf(it), 0) * 10) / 10;
+    const cap = col
+      ? Math.round((((person.capacityHrs - person.leaveHrs) / period.days.length) * col.idx.length) * 10) / 10
+      : person.capacityHrs - person.leaveHrs;
+    const pct = cap > 0 ? Math.round((total / cap) * 100) : 0;
+    const fmt = (d?: string): string => d ?? '—';
+    return (
+      <div style={{ flex: '1 1 440px', minWidth: 0, alignSelf: 'stretch', background: 'var(--vl-card)', border: `1px solid ${C.navy}`, borderRadius: 8, overflow: 'hidden' }}>
+        <div style={{ background: 'var(--vl-navySoft)', padding: '11px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ fontSize: 13 }}>
+            <b style={{ color: 'var(--vl-brandText)', font: '700 14px "Open Sans",sans-serif' }}>{person.name}</b>
+            <span style={{ color: C.sub, fontSize: 11 }}> · {label} · </span>
+            <b style={{ color: bandColor(pct) }}>{total}h</b>
+            <span style={{ color: C.sub, fontSize: 11 }}> allocated of {cap}h capacity = </span>
+            <b style={{ color: bandColor(pct) }}>{pct}%</b>
+          </div>
+          <div onClick={() => setBreakdown(null)} style={{ cursor: 'pointer', fontSize: 11, color: C.sub, border: '1px solid var(--vl-borderStrong)', background: 'var(--vl-card)', borderRadius: 4, padding: '4px 10px' }}>
+            ✕ Close
+          </div>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 640 }}>
+            <thead>
+              <tr style={{ background: 'var(--vl-soft)', color: C.sub, textAlign: 'left' }}>
+                <th style={{ ...th, padding: '7px 8px' }}>ID</th>
+                <th style={{ ...th, padding: '7px 8px' }}>Type</th>
+                <th style={th}>Title</th>
+                <th style={{ ...th, padding: '7px 8px' }}>Project</th>
+                <th style={{ ...th, padding: '7px 8px' }}>Sprint</th>
+                <th style={{ ...th, padding: '7px 8px' }}>State</th>
+                <th style={{ ...th, padding: '7px 8px' }}>Start</th>
+                <th style={{ ...th, padding: '7px 8px' }}>Due</th>
+                {col && <th style={{ ...th, padding: '7px 8px', textAlign: 'right' }}>Hrs · {col.label}</th>}
+                <th style={{ ...th, textAlign: 'right' }}>Hrs · whole {periodWord}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((it) => (
+                <tr key={it.id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                  <td style={{ ...td, padding: '7px 8px', color: C.sub }}>{it.id}</td>
+                  <td style={{ ...td, padding: '7px 8px' }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: it.type === 'Bug' ? '#CC293D' : it.type === 'User Story' ? '#0a8fc2' : '#C9A227' }}>{it.type}</span>
+                  </td>
+                  <td style={{ ...td, fontWeight: 600, color: 'var(--vl-ink2)', maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.title}</td>
+                  <td style={{ ...td, padding: '7px 8px', color: C.sub, whiteSpace: 'nowrap' }}>
+                    <span onClick={() => onOpenProject(it.project)} style={{ cursor: 'pointer', color: 'var(--vl-brandText)', fontWeight: 600 }}>{it.project}</span>
+                  </td>
+                  <td
+                    style={{ ...td, padding: '7px 8px', color: it.sprint ? C.sub : '#B3261E', whiteSpace: 'nowrap' }}
+                    title={it.sprintStart || it.sprintFinish ? `${fmt(it.sprintStart)} → ${fmt(it.sprintFinish)}` : 'No dated sprint'}
+                  >
+                    {it.sprint ?? '—'}
+                  </td>
+                  <td style={{ ...td, padding: '7px 8px', color: C.sub }}>{it.state}</td>
+                  <td style={{ ...td, padding: '7px 8px', color: it.startDate ? C.sub : '#B3261E' }}>{fmt(it.startDate)}</td>
+                  <td style={{ ...td, padding: '7px 8px', color: it.dueDate ? C.sub : '#B3261E' }}>{fmt(it.dueDate)}</td>
+                  {col && <td style={{ ...td, padding: '7px 8px', textAlign: 'right', fontWeight: 700, color: 'var(--vl-brandText)' }}>{hrsOf(it)}h</td>}
+                  <td style={{ ...td, textAlign: 'right', fontWeight: col ? 400 : 700, color: col ? C.sub : 'var(--vl-brandText)' }}>{it.hrs}h</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {person.unscheduled.length > 0 && (
+          <div style={{ borderTop: `1px solid ${C.line2}`, padding: '10px 14px', background: 'var(--vl-soft)' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#B3261E', marginBottom: 6 }}>
+              ⚠ Unscheduled — {person.unscheduledHrs}h not placed (no Start/Due dates and no dated sprint)
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {person.unscheduled.slice(0, 12).map((it) => (
+                <div key={it.id} style={{ fontSize: 11, color: C.sub, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+                    <span style={{ color: C.faint }}>#{it.id}</span> {it.title}
+                    <span style={{ color: C.faint }}> · {it.sprint ?? 'no sprint'}</span>
+                  </span>
+                  <b style={{ color: 'var(--vl-ink2)', whiteSpace: 'nowrap' }}>{it.hrs}h</b>
+                </div>
+              ))}
+              {person.unscheduled.length > 12 && (
+                <div style={{ fontSize: 10, color: C.faint }}>+{person.unscheduled.length - 12} more</div>
+              )}
+            </div>
+          </div>
+        )}
+        <div style={{ padding: '9px 14px', fontSize: 11, color: 'var(--vl-sub)', borderTop: `1px solid ${C.line2}` }}>
+          Allocation = Original Estimate (fallback Remaining Work) of open items, placed by their <b style={{ color: 'var(--vl-brandText)' }}>Start→Due dates</b> when set, otherwise by their assigned <b style={{ color: 'var(--vl-brandText)' }}>Sprint</b>'s dates. Items with neither are listed as <b style={{ color: '#B3261E' }}>Unscheduled</b> and are not counted until you give them a sprint or dates.
+        </div>
+      </div>
+    );
+  })();
+
   const subCols = period.cols;
-  const safeDayIdx = Math.min(dayIdx, subCols.length - 1);
 
   return (
     <div className={vlCanvasClass(dark)} style={{ background: C.pageBg, color: C.ink, fontFamily: '"Segoe UI","Open Sans",system-ui,sans-serif', padding: '14px clamp(12px,2vw,28px) 40px', minHeight: '100vh' }}>
@@ -354,7 +483,15 @@ function ResourceBody({
           <div onClick={onConnectSharePoint} style={{ cursor: 'pointer', background: C.navy, color: '#fff', fontSize: 12, fontWeight: 700, borderRadius: 5, padding: '7px 16px' }}>
             Connect SharePoint
           </div>
-          <span style={{ fontSize: 10, color: C.faint }}>SPA redirect origin for the app registration: {window.location.origin}</span>
+          <span style={{ fontSize: 11, color: C.faint, width: '100%' }}>
+            If sign-in fails with <b>AADSTS500113</b>, register this exact value in the Entra app →
+            Authentication → <b>Single-page application</b> redirect URI (no trailing slash):
+            <code
+              style={{ marginLeft: 6, padding: '2px 6px', borderRadius: 4, background: 'var(--vl-track)', color: 'var(--vl-ink2)', userSelect: 'all', fontWeight: 700 }}
+            >
+              {getRedirectUri()}
+            </code>
+          </span>
         </div>
       )}
       {!isSharePointConfigured() && (
@@ -406,176 +543,168 @@ function ResourceBody({
         </div>
       )}
 
-      {/* ---- heatmap: resource × column ---- */}
-      <Card pad="12px 14px" style={{ marginBottom: 12 }}>
+      {/* ---- weekly capacity matrix (+ breakdown side-by-side) ---- */}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
+      <Card pad="12px 14px" style={{ flex: breakdown ? '1 1 520px' : '1 1 100%', minWidth: 0, marginBottom: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
-          <span style={{ font: '600 13px "Open Sans",sans-serif' }}>Allocation vs capacity — resource × {colNoun}</span>
+          <span style={{ font: '600 13px "Open Sans",sans-serif' }}>
+            Weekly allocation vs available capacity — resource × week
+          </span>
           <span style={{ fontSize: 10, color: 'var(--vl-sub)' }}>
-            % of leave-adjusted capacity · <span style={{ color: C.green }}>■</span>&lt;60 <span style={{ color: C.indigoMid }}>■</span>60–90 <span style={{ color: C.orange }}>■</span>90–100 <span style={{ color: C.red }}>■</span>&gt;100
+            Original Estimate ÷ (40h − leave) · weekly total + day-wise split · <span style={{ color: C.green }}>■</span>&lt;90 <span style={{ color: C.orange }}>■</span>90–100 <span style={{ color: C.red }}>■</span>&gt;100 <span style={{ color: C.faint }}>■</span>idle
           </span>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: `140px repeat(${period.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: `200px repeat(${weeks.length},minmax(120px,1fr))`, gap: 6, alignItems: 'center' }}>
           <div />
-          {period.cols.map((c) => (
-            <div key={c.label} style={{ fontSize: 10, color: C.sub, textAlign: 'center', fontWeight: 600 }}>
-              {c.label}
+          {weeks.map((w) => (
+            <div key={w.label} style={{ fontSize: 10, color: C.sub, textAlign: 'center', fontWeight: 600 }}>
+              {w.label}
             </div>
           ))}
           {people.flatMap((p) => [
-            <div key={`n${p.name}`} style={{ fontSize: 11, color: 'var(--vl-ink2)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {p.name}
+            <div key={`n${p.name}`} style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: 'var(--vl-ink2)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
+              <div style={{ fontSize: 9, color: C.faint, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.role}</div>
             </div>,
-            ...period.cols.map((c, ci) => {
-              const v = colPct(p, c.idx);
+            ...weeks.map((w, ci) => {
+              const alloc = Math.round(w.idx.reduce((a, i) => a + (p.byDay[i] ?? 0), 0) * 10) / 10;
+              const avail = Math.round(w.idx.reduce((a, i) => a + Math.max(0, HOURS_PER_DAY - (p.leaveByDay?.[i] ?? 0)), 0) * 10) / 10;
+              const util = avail > 0 ? Math.round((alloc / avail) * 100) : 0;
+              const idle = alloc <= 0;
+              const col = idle ? C.faint : bandColor(util);
               return (
                 <div
                   key={`${p.name}-${ci}`}
-                  title={`${p.name} ${c.label}: ${v}% — click for the work items behind this`}
-                  onClick={() => setBreakdown({ person: p.name, colIdx: ci })}
-                  style={{ height: 28, borderRadius: 3, background: bandColor(v), opacity: 0.45 + v / 200, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', fontWeight: 700, cursor: 'pointer' }}
+                  title={`${p.name} · ${w.label}: ${alloc}h allocated of ${avail}h available (${util}%) — click for the work items behind this`}
+                  onClick={() => setBreakdown({ person: p.name, colIdx: w.colIdx })}
+                  style={{ border: '1px solid var(--vl-line2)', borderLeft: `3px solid ${col}`, borderRadius: 4, padding: '6px 8px', cursor: 'pointer', background: 'var(--vl-soft)' }}
                 >
-                  {v}%
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--vl-ink2)', whiteSpace: 'nowrap' }}>
+                      {alloc}<span style={{ color: C.faint, fontWeight: 400 }}>/{avail}h</span>
+                    </span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: col }}>{idle ? '—' : `${util}%`}</span>
+                  </div>
+                  <div style={{ height: 7, background: 'var(--vl-track)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.min(100, util)}%`, height: '100%', background: col }} />
+                  </div>
+                  {/* day-wise split within this week */}
+                  <div style={{ display: 'flex', gap: 2, marginTop: 5 }}>
+                    {w.idx.map((di) => {
+                      const da = Math.round((p.byDay[di] ?? 0) * 10) / 10;
+                      const dcap = Math.max(0, HOURS_PER_DAY - (p.leaveByDay?.[di] ?? 0));
+                      const du = dcap > 0 ? Math.round((da / dcap) * 100) : 0;
+                      const dcol = da <= 0 ? C.faint : bandColor(du);
+                      const wd = (period.dayLabels[di] ?? '').split(' ')[0];
+                      return (
+                        <div
+                          key={di}
+                          title={`${period.dayLabels[di]}: ${da}h of ${dcap}h available (${du}%)`}
+                          style={{ flex: 1, minWidth: 0, textAlign: 'center' }}
+                        >
+                          <div style={{ fontSize: 8, color: C.faint, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden' }}>{wd}</div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: dcol, lineHeight: 1.3 }}>{da > 0 ? `${da}h` : '·'}</div>
+                          <div style={{ height: 3, borderRadius: 2, background: 'var(--vl-line2)', overflow: 'hidden' }}>
+                            <div style={{ width: `${Math.min(100, du)}%`, height: '100%', background: dcol }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               );
             }),
           ])}
         </div>
       </Card>
+      {breakdownPanel}
+      </div>
 
-      {/* ---- resource allocation by project — per day ---- */}
+      {/* ---- resource allocation by project — whole period + per-day split ---- */}
       <Card pad="12px 14px" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 6 }}>
-          <span style={{ font: '600 13px "Open Sans",sans-serif' }}>Resource allocation by project — per {subNoun}</span>
-          <span style={{ fontSize: 10, color: 'var(--vl-sub)' }}>pick a {subNoun} · each bar = a person, split by project · hover for exact %</span>
-        </div>
-        <div style={{ display: 'flex', marginBottom: 14, border: '1px solid var(--vl-borderStrong)', borderRadius: 6, overflow: 'hidden', width: 'fit-content', maxWidth: '100%', flexWrap: 'wrap' }}>
-          {subCols.map((c, i) => (
-            <div
-              key={c.label}
-              onClick={() => setDayIdx(i)}
-              style={{ padding: '6px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: i === safeDayIdx ? C.orange : 'var(--vl-card)', color: i === safeDayIdx ? '#fff' : C.sub, borderRight: '1px solid var(--vl-line)', whiteSpace: 'nowrap' }}
-            >
-              {c.label}
-            </div>
-          ))}
+          <span style={{ font: '600 13px "Open Sans",sans-serif' }}>Resource allocation by project — whole {periodNoun} + per-{subNoun} split</span>
+          <span style={{ fontSize: 10, color: 'var(--vl-sub)' }}>each segment = a project · click a segment to open its health · click a {subNoun} for the work items</span>
         </div>
         <div>
           {people.map((p, ri) => {
-            const idx = subCols[safeDayIdx].idx;
-            const segsAll = p.byProject
-              .map((bp) => ({ name: bp.project, hrs: Math.round(idx.reduce((a, i) => a + (bp.day[i] ?? 0), 0) * 10) / 10 }))
+            const allIdx = period.days.map((_, i) => i);
+            const whole = p.byProject
+              .map((bp) => ({ name: bp.project, hrs: Math.round(allIdx.reduce((a, i) => a + (bp.day[i] ?? 0), 0) * 10) / 10 }))
               .filter((s) => s.hrs > 0);
-            const segTotal = segsAll.reduce((a, s) => a + s.hrs, 0);
-            const v = colPct(p, idx);
+            const wholeTotal = whole.reduce((a, s) => a + s.hrs, 0);
+            const wholeV = colPct(p, allIdx);
             return (
-              <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: ri < people.length - 1 ? `1px solid ${C.line2}` : 'none' }}>
+              <div key={p.name} style={{ display: 'flex', gap: 12, padding: '12px 0', borderBottom: ri < people.length - 1 ? `1px solid ${C.line2}` : 'none' }}>
                 <div style={{ width: 132, flexShrink: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--vl-ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
                   <div style={{ fontSize: 10, color: C.faint }}>{p.role}</div>
                 </div>
-                <div style={{ flex: 1, display: 'flex', height: 22, borderRadius: 3, overflow: 'hidden', background: C.line2 }}>
-                  {segsAll.map((s) => {
-                    const pct = segTotal > 0 ? Math.round((s.hrs / segTotal) * 100) : 0;
-                    const short = s.name.length > 16 ? `${s.name.slice(0, 15)}…` : s.name;
-                    return (
-                      <div
-                        key={s.name}
-                        title={`${s.name}: ${s.hrs}h (${pct}% of this ${subNoun}) — click to open the project's health`}
-                        onClick={() => onOpenProject(s.name)}
-                        style={{ width: `${pct}%`, background: projColor.get(s.name), display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', cursor: 'pointer' }}
-                      >
-                        {pct >= 15 && <span style={{ fontSize: 9, color: '#fff', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 4px' }}>{short} {pct}%</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-                <div
-                  style={{ width: 52, flexShrink: 0, textAlign: 'right', cursor: 'pointer' }}
-                  title="Click to see the work items behind this load"
-                  onClick={() => setBreakdown({ person: p.name, colIdx: safeDayIdx })}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 800, color: bandColor(v) }}>{v}%</div>
-                  <div style={{ fontSize: 9, color: C.faint }}>load</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {/* whole-period split */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <span style={{ fontSize: 9, color: C.faint, width: 62, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '.3px' }}>{isCurrent ? 'This week' : mode === 'month' ? 'This month' : 'Week'}</span>
+                    <div style={{ flex: 1, display: 'flex', height: 20, borderRadius: 3, overflow: 'hidden', background: C.line2 }}>
+                      {whole.map((s) => {
+                        const pct = wholeTotal > 0 ? Math.round((s.hrs / wholeTotal) * 100) : 0;
+                        const short = s.name.length > 16 ? `${s.name.slice(0, 15)}…` : s.name;
+                        return (
+                          <div
+                            key={s.name}
+                            title={`${s.name}: ${s.hrs}h (${pct}% of the ${periodNoun}) — click to open the project's health`}
+                            onClick={() => onOpenProject(s.name)}
+                            style={{ width: `${pct}%`, background: projColor.get(s.name), display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', cursor: 'pointer' }}
+                          >
+                            {pct >= 15 && <span style={{ fontSize: 9, color: '#fff', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 4px' }}>{short} {pct}%</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div
+                      style={{ width: 48, flexShrink: 0, textAlign: 'right', cursor: 'pointer' }}
+                      title="Work items for the whole period"
+                      onClick={() => setBreakdown({ person: p.name, colIdx: null })}
+                    >
+                      <div style={{ fontSize: 13, fontWeight: 800, color: bandColor(wholeV) }}>{wholeV}%</div>
+                      <div style={{ fontSize: 9, color: C.faint }}>load</div>
+                    </div>
+                  </div>
+                  {/* per-day (or per-week) split */}
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${subCols.length},1fr)`, gap: 6, paddingLeft: 72 }}>
+                    {subCols.map((c, ci) => {
+                      const segs = p.byProject
+                        .map((bp) => ({ name: bp.project, hrs: Math.round(c.idx.reduce((a, i) => a + (bp.day[i] ?? 0), 0) * 10) / 10 }))
+                        .filter((s) => s.hrs > 0);
+                      const segTotal = Math.round(segs.reduce((a, s) => a + s.hrs, 0) * 10) / 10;
+                      const dv = colPct(p, c.idx);
+                      const short = c.label.split(' ').slice(0, 2).join(' ');
+                      return (
+                        <div
+                          key={c.label}
+                          onClick={() => setBreakdown({ person: p.name, colIdx: ci })}
+                          style={{ cursor: 'pointer' }}
+                          title={`${c.label}: ${segTotal}h (${dv}%) — click for the work items`}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: C.faint, marginBottom: 2, gap: 3 }}>
+                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{short}</span>
+                            <span style={{ color: segTotal > 0 ? bandColor(dv) : C.faint, fontWeight: 700 }}>{segTotal > 0 ? `${dv}%` : '·'}</span>
+                          </div>
+                          <div style={{ display: 'flex', height: 12, borderRadius: 2, overflow: 'hidden', background: C.line2 }}>
+                            {segs.map((s) => {
+                              const pct = segTotal > 0 ? Math.round((s.hrs / segTotal) * 100) : 0;
+                              return <div key={s.name} title={`${s.name}: ${s.hrs}h`} style={{ width: `${pct}%`, background: projColor.get(s.name) }} />;
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             );
           })}
         </div>
       </Card>
-
-      {/* ---- allocation breakdown: the work items behind a load % ---- */}
-      {breakdown &&
-        (() => {
-          const person = people.find((p) => p.name === breakdown.person);
-          if (!person) return null;
-          const col = breakdown.colIdx !== null ? period.cols[breakdown.colIdx] : null;
-          const label = col ? col.label : `whole ${mode === 'month' ? 'month' : 'week'}`;
-          const hrsOf = (it: AllocItem): number =>
-            col ? Math.round(col.idx.reduce((a, i) => a + (it.day[i] ?? 0), 0) * 10) / 10 : it.hrs;
-          const rows = person.items.filter((it) => hrsOf(it) > 0).sort((a, b) => hrsOf(b) - hrsOf(a));
-          const total = Math.round(rows.reduce((a, it) => a + hrsOf(it), 0) * 10) / 10;
-          const cap = col
-            ? Math.round((((person.capacityHrs - person.leaveHrs) / period.days.length) * col.idx.length) * 10) / 10
-            : person.capacityHrs - person.leaveHrs;
-          const pct = cap > 0 ? Math.round((total / cap) * 100) : 0;
-          const fmt = (d?: string): string => d ?? '—';
-          return (
-            <div style={{ background: 'var(--vl-card)', border: `1px solid ${C.navy}`, borderRadius: 8, overflow: 'hidden', marginBottom: 12 }}>
-              <div style={{ background: 'var(--vl-navySoft)', padding: '11px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                <div style={{ fontSize: 13 }}>
-                  <b style={{ color: 'var(--vl-brandText)', font: '700 14px "Open Sans",sans-serif' }}>{person.name}</b>
-                  <span style={{ color: C.sub, fontSize: 11 }}> · {label} · </span>
-                  <b style={{ color: bandColor(pct) }}>{total}h</b>
-                  <span style={{ color: C.sub, fontSize: 11 }}> allocated of {cap}h capacity = </span>
-                  <b style={{ color: bandColor(pct) }}>{pct}%</b>
-                </div>
-                <div onClick={() => setBreakdown(null)} style={{ cursor: 'pointer', fontSize: 11, color: C.sub, border: '1px solid var(--vl-borderStrong)', background: 'var(--vl-card)', borderRadius: 4, padding: '4px 10px' }}>
-                  ✕ Close
-                </div>
-              </div>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 860 }}>
-                  <thead>
-                    <tr style={{ background: 'var(--vl-soft)', color: C.sub, textAlign: 'left' }}>
-                      <th style={{ ...th, padding: '7px 8px' }}>ID</th>
-                      <th style={{ ...th, padding: '7px 8px' }}>Type</th>
-                      <th style={th}>Title</th>
-                      <th style={{ ...th, padding: '7px 8px' }}>Project</th>
-                      <th style={{ ...th, padding: '7px 8px' }}>State</th>
-                      <th style={{ ...th, padding: '7px 8px' }}>Start</th>
-                      <th style={{ ...th, padding: '7px 8px' }}>Due</th>
-                      <th style={{ ...th, padding: '7px 8px', textAlign: 'right' }}>Hrs · {col ? 'this ' + subNoun : 'period'}</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Hrs · period</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((it) => (
-                      <tr key={it.id} style={{ borderBottom: `1px solid ${C.line2}` }}>
-                        <td style={{ ...td, padding: '7px 8px', color: C.sub }}>{it.id}</td>
-                        <td style={{ ...td, padding: '7px 8px' }}>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: it.type === 'Bug' ? '#CC293D' : it.type === 'User Story' ? '#0a8fc2' : '#C9A227' }}>{it.type}</span>
-                        </td>
-                        <td style={{ ...td, fontWeight: 600, color: 'var(--vl-ink2)', maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.title}</td>
-                        <td style={{ ...td, padding: '7px 8px', color: C.sub, whiteSpace: 'nowrap' }}>
-                          <span onClick={() => onOpenProject(it.project)} style={{ cursor: 'pointer', color: 'var(--vl-brandText)', fontWeight: 600 }}>{it.project}</span>
-                        </td>
-                        <td style={{ ...td, padding: '7px 8px', color: C.sub }}>{it.state}</td>
-                        <td style={{ ...td, padding: '7px 8px', color: it.startDate ? C.sub : '#B3261E' }}>{fmt(it.startDate)}</td>
-                        <td style={{ ...td, padding: '7px 8px', color: it.dueDate ? C.sub : '#B3261E' }}>{fmt(it.dueDate)}</td>
-                        <td style={{ ...td, padding: '7px 8px', textAlign: 'right', fontWeight: 700, color: 'var(--vl-brandText)' }}>{hrsOf(it)}h</td>
-                        <td style={{ ...td, textAlign: 'right', color: C.sub }}>{it.hrs}h</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div style={{ padding: '9px 14px', fontSize: 11, color: 'var(--vl-sub)', borderTop: `1px solid ${C.line2}` }}>
-                Allocation = Remaining Work (or Original Estimate − Completed) of open assigned items, spread across the days of their Start→Due window.{' '}
-                <b style={{ color: '#B3261E' }}>Items with no dates</b> are treated as current workload across the whole period — set Start/Due dates in Boards to spread them correctly.
-              </div>
-            </div>
-          );
-        })()}
 
       {/* ---- project roll-up — % of team capacity per day (current only) ---- */}
       {isCurrent && (

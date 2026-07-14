@@ -444,7 +444,22 @@ function LegendItem({ color, label, line }: { color: string; label: string; line
 
 function SprintsCard({ m }: { m: ProjectReportMetrics }) {
   const styles = useStyles();
-  const s = m.sprintStats;
+  // Focus on the recent window: sprints finishing in the last ~6 months or the
+  // future. Long histories (S1 from 2024…) otherwise drown the current picture.
+  const cutoff = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 180);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+  const recent = m.sprints.filter((sp) => !sp.finishDate || sp.finishDate >= cutoff);
+  const shown = recent.length > 0 ? recent : m.sprints;
+  const s = {
+    total: shown.length,
+    done: shown.filter((sp) => sp.timeframe === 'past').length,
+    inProgress: shown.filter((sp) => sp.timeframe === 'current').length,
+    pending: shown.filter((sp) => sp.timeframe === 'future').length,
+  };
+  const hiddenSprints = m.sprints.length - shown.length;
   const total = s.total || 1;
   const chipColor = (tf: string): { bg: string; fg: string } =>
     tf === 'past'
@@ -457,7 +472,8 @@ function SprintsCard({ m }: { m: ProjectReportMetrics }) {
       <div className={styles.panelHead}>
         <span className={styles.sectionTitle}>Sprints</span>
         <span style={{ fontSize: 12, color: tokens.colorNeutralForeground3 }}>
-          {s.done} of {total} done
+          {s.done} of {total} done · last 6 months + upcoming
+          {hiddenSprints > 0 ? ` · ${hiddenSprints} older hidden` : ''}
         </span>
       </div>
       <div className={styles.segTrack}>
@@ -494,7 +510,7 @@ function SprintsCard({ m }: { m: ProjectReportMetrics }) {
         </div>
       </div>
       <div className={styles.chipRow}>
-        {m.sprints.slice(0, 12).map((sp, i) => {
+        {shown.slice(-12).map((sp, i) => {
           const c = chipColor(sp.timeframe);
           const range =
             sp.startDate || sp.finishDate
@@ -1088,6 +1104,21 @@ export function ReportBody({ m, epicTitle }: { m: ProjectReportMetrics; epicTitl
   const styles = useStyles();
   return (
     <div className={styles.body}>
+      {epicTitle && (
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: 'var(--pi-accent)',
+            backgroundColor: 'var(--pi-accent-soft)',
+            borderRadius: 8,
+            padding: '8px 12px',
+          }}
+        >
+          Scoped to Epic: {epicTitle} — every number below covers only this Epic's work items.
+          Select “All Epics” above for the whole project.
+        </div>
+      )}
       {m.truncated && (
         <Text size={200} style={{ color: 'var(--pi-warn)' }}>
           Showing the {m.total} most recently changed work items; totals may be partial for very

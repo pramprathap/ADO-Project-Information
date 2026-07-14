@@ -54,6 +54,7 @@ import type { ProjectInformation } from '@/models/ProjectInformation';
 import type { ValidationField } from '@/models/ValidationResult';
 import {
   BILLING_TYPE_OPTIONS,
+  EPIC_TAG_OPTIONS,
   CLIENT_REGION_OPTIONS,
   HOSTING_MODEL_OPTIONS,
   PROJECT_HEALTH_OPTIONS,
@@ -232,6 +233,77 @@ function ProjectApp({ page }: { page: 'info' | 'health' }) {
         ) : (
           <ProjectForm services={services} />
         ))}
+    </>
+  );
+}
+
+/**
+ * Epic Classification: lists the project's Epics from Boards and lets project
+ * administrators tag each one (Development / Support / Post-Production / …).
+ * Tags are stored in project properties and drive per-epic health reporting.
+ */
+function EpicClassification({
+  services,
+  value,
+  disabled,
+  onChange,
+}: {
+  services: AppServices;
+  value: Record<string, string>;
+  disabled: boolean;
+  onChange: (tags: Record<string, string>) => void;
+}) {
+  const [epics, setEpics] = useState<{ id: number; title: string; state: string }[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void services.workItems
+      .getEpicList()
+      .then((list) => {
+        if (!cancelled) setEpics(list);
+      })
+      .catch(() => {
+        if (!cancelled) setEpics([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [services]);
+
+  if (epics === null) {
+    return (
+      <FullWidthField>
+        <Text size={200}>Loading epics from Azure Boards…</Text>
+      </FullWidthField>
+    );
+  }
+  if (epics.length === 0) {
+    return (
+      <FullWidthField>
+        <Text size={200}>No Epics found on this project's board yet.</Text>
+      </FullWidthField>
+    );
+  }
+  return (
+    <>
+      {epics.map((e) => (
+        <FullWidthField key={e.id}>
+          <DropdownField
+            fieldId={`epicTag-${e.id}`}
+            label={`${e.title} (#${e.id} · ${e.state})`}
+            disabled={disabled}
+            allowEmpty
+            value={value[String(e.id)] ?? ''}
+            options={EPIC_TAG_OPTIONS}
+            onChange={(v) => {
+              const next = { ...value };
+              if (v) next[String(e.id)] = v;
+              else delete next[String(e.id)];
+              onChange(next);
+            }}
+          />
+        </FullWidthField>
+      ))}
     </>
   );
 }
@@ -572,6 +644,21 @@ function ProjectForm({ services }: { services: AppServices }) {
               identityService={services.identities}
               error={errorFor('team')}
               onChange={(team) => update('team', team, 'team')}
+            />
+          </FormSection>
+
+          {/* Epic Classification */}
+          <FormSection
+            title="Epic Classification"
+            caption="Tag each Epic — the Project Health report follows the tag"
+            glyph={<StatusGlyph />}
+            tint="blue"
+          >
+            <EpicClassification
+              services={services}
+              value={info.epicTags}
+              disabled={readOnly}
+              onChange={(tags) => update('epicTags', tags)}
             />
           </FormSection>
         </Column>

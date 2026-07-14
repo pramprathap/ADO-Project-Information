@@ -92,7 +92,9 @@ function scoreAttention(p: Omit<PortfolioProject, 'attention'>): AttentionScore 
 
 const NON_BILLABLE_TYPES = new Set(['Internal', 'Internship']);
 const NON_BILLABLE_BILLING = new Set(['InternalProject', 'NonBillable']);
-const DONE_STATUSES = new Set(['Completed', 'Cancelled']);
+// Perpetual = continuous engagement with no committed end date, so it can never
+// be "overdue by planned end"; Completed/Cancelled are simply done.
+const DONE_STATUSES = new Set(['Completed', 'Cancelled', 'Perpetual']);
 
 function labelOf<T extends string>(opts: { value: T; label: string }[], v?: string): string {
   return (v && opts.find((o) => o.value === v)?.label) || '';

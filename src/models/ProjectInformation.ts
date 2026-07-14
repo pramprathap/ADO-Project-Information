@@ -1,6 +1,12 @@
 import type { AzureDevOpsIdentity } from './AzureDevOpsIdentity';
 
-export type ProjectStatus = 'NotStarted' | 'InProgress' | 'OnHold' | 'Completed' | 'Cancelled';
+export type ProjectStatus =
+  | 'NotStarted'
+  | 'InProgress'
+  | 'Perpetual'
+  | 'OnHold'
+  | 'Completed'
+  | 'Cancelled';
 
 export type ProjectType =
   | 'Development'
@@ -90,6 +96,8 @@ export interface ProjectInformation {
 
   // Project team (variable-length list of role + person)
   team: TeamMember[];
+  /** Per-Epic classification: { [epicId]: tag } — drives per-epic health reporting. */
+  epicTags: Record<string, string>;
 
   // G. Technical Information
   technologyStack?: string;
@@ -144,6 +152,7 @@ export function createEmptyProjectInformation(): ProjectInformation {
     clientRegion: '',
     internalSponsor: null,
     team: [],
+    epicTags: {},
     technologyStack: '',
     repositorySource: undefined,
     repositoryUrl: '',

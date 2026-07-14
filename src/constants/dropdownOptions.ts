@@ -20,6 +20,7 @@ export interface DropdownOption<T extends string> {
 export const PROJECT_STATUS_OPTIONS: DropdownOption<ProjectStatus>[] = [
   { value: 'NotStarted', label: 'Not Started', color: 'var(--pi-neutral-swatch)' },
   { value: 'InProgress', label: 'In Progress', color: 'var(--pi-accent)' },
+  { value: 'Perpetual', label: 'Perpetual (Continuous)', color: '#14b8a6' },
   { value: 'OnHold', label: 'On Hold', color: 'var(--pi-warn)' },
   { value: 'Completed', label: 'Completed', color: 'var(--pi-good)' },
   { value: 'Cancelled', label: 'Cancelled', color: 'var(--pi-danger)' },
@@ -111,6 +112,18 @@ export const BUSINESS_UNIT_SUGGESTIONS: string[] = [
 ];
 
 /** Sets of valid enum values used by the mapper to validate stored data. */
+/** Per-Epic classification tags (drives how each Epic is reported in health). */
+export const EPIC_TAG_OPTIONS: DropdownOption<string>[] = [
+  { value: 'Development', label: 'Development' },
+  { value: 'Support', label: 'Support' },
+  { value: 'PostProduction', label: 'Post-Production' },
+  { value: 'ResourcingModel', label: 'Resourcing Model' },
+  { value: 'Internal', label: 'Internal' },
+  { value: 'TrainingAndLearning', label: 'Training & Learning' },
+  { value: 'POC', label: 'POC' },
+  { value: 'Other', label: 'Other' },
+];
+
 export const VALID_PROJECT_STATUS = new Set(PROJECT_STATUS_OPTIONS.map((o) => o.value));
 export const VALID_PROJECT_TYPE = new Set(PROJECT_TYPE_OPTIONS.map((o) => o.value));
 export const VALID_PROJECT_HEALTH = new Set(PROJECT_HEALTH_OPTIONS.map((o) => o.value));

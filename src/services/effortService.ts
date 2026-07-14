@@ -9,6 +9,7 @@ import {
   GraphTimesheetProvider,
   type DayMode,
 } from './sharePointProviders';
+import { employeeDirectoryNotConnected, type EmployeeDirectory } from './resourceService';
 import { normalizeName } from './sharePointProviders';
 
 /** One resource row for the Effort & Timesheet page. */
@@ -57,8 +58,17 @@ export async function loadEffortData(
   leave: GraphLeaveProvider,
   timesheet: GraphTimesheetProvider,
   onProgress?: (done: number, total: number) => void,
+  employees: EmployeeDirectory = employeeDirectoryNotConnected,
 ): Promise<EffortData> {
-  const res = await loadResourceData(org, projects, period, leave, timesheet, onProgress);
+  const res = await loadResourceData(
+    org,
+    projects,
+    period,
+    leave,
+    timesheet,
+    onProgress,
+    employees,
+  );
   const [tsDetail, attendance] = await Promise.all([
     timesheet.getDetail(period),
     leave.getAttendance(period),

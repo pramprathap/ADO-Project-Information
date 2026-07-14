@@ -34,14 +34,16 @@ export function useProjectReport(services: AppServices): UseProjectReportResult 
         // milestone visibility (phased delivery vs continuous/activity-based).
         let currentPhase: string | undefined;
         let projectType: string | undefined;
+        let epicTags: Record<string, string> | undefined;
         try {
           const info = fromProperties(await services.properties.load());
           currentPhase = info.currentPhase || undefined;
           projectType = info.projectType || undefined;
+          epicTags = info.epicTags;
         } catch {
           // Non-fatal: fall back to Boards-only gating (dev Epics still work).
         }
-        const result = await services.workItems.getReport({ currentPhase, projectType });
+        const result = await services.workItems.getReport({ currentPhase, projectType, epicTags });
         if (!cancelled) {
           setMetrics(result);
           setStatus('loaded');

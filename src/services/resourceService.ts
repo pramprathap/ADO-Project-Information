@@ -134,12 +134,17 @@ export function weekOptions(): { label: string; offset: number }[] {
  */
 export interface LeaveProvider {
   getLeaveHours(period: Period): Promise<Map<string, number>>;
+  /** Approved leave hours per working day of the period (for per-week capacity). */
+  getLeaveHoursByDay(period: Period): Promise<Map<string, number[]>>;
   readonly connected: boolean;
 }
 
 export const leaveNotConnected: LeaveProvider = {
   connected: false,
   async getLeaveHours(): Promise<Map<string, number>> {
+    return new Map();
+  },
+  async getLeaveHoursByDay(): Promise<Map<string, number[]>> {
     return new Map();
   },
 };
@@ -162,6 +167,25 @@ export const timesheetNotConnected: TimesheetProvider = {
   connected: false,
   async getTimesheetHours(): Promise<Map<string, { submitted: number; approved: number }>> {
     return new Map();
+  },
+};
+
+/**
+ * Roster of currently-Active employees, keyed by normalized name. Source of
+ * truth is the SharePoint TimesheetPro `EmployeeList` (Employee, EmployeeStatus).
+ * When connected, the resource views show only people whose EmployeeStatus is
+ * "Active" — inactive/left employees are hidden even if stale Boards
+ * assignments still reference them. When not connected, no filtering is applied.
+ */
+export interface EmployeeDirectory {
+  getActiveNames(): Promise<Set<string>>;
+  readonly connected: boolean;
+}
+
+export const employeeDirectoryNotConnected: EmployeeDirectory = {
+  connected: false,
+  async getActiveNames(): Promise<Set<string>> {
+    return new Set();
   },
 };
 
@@ -192,6 +216,10 @@ export interface AllocItem {
   project: string;
   startDate?: string;
   dueDate?: string;
+  /** Sprint (iteration) the item belongs to and its dated window, if any. */
+  sprint?: string;
+  sprintStart?: string;
+  sprintFinish?: string;
   /** Hours attributed to the whole period. */
   hrs: number;
   /** Hours attributed per day, aligned with period.days. */
@@ -203,6 +231,8 @@ export interface ResourcePerson {
   role: string;
   capacityHrs: number;
   leaveHrs: number;
+  /** Leave hours per working day of the period (for per-week available capacity). */
+  leaveByDay: number[];
   allocatedHrs: number;
   /** allocated / (capacity − leave), as a percentage. */
   utilPct: number;
@@ -214,6 +244,10 @@ export interface ResourcePerson {
   work: ProjectWork[];
   /** The work items behind the allocation (transparency for the load %). */
   items: AllocItem[];
+  /** Open items with neither dates nor a dated sprint — excluded from the spread. */
+  unscheduled: AllocItem[];
+  /** Total Original-Estimate hours sitting in unscheduled items. */
+  unscheduledHrs: number;
   /** Timesheet entered hours (LMS) — 0 until the middle-tier is connected. */
   timesheetHrs: number;
 }
@@ -254,22 +288,33 @@ export async function loadResourceData(
   leave: LeaveProvider = leaveNotConnected,
   timesheet: TimesheetProvider = timesheetNotConnected,
   onProgress?: (done: number, total: number) => void,
+  employees: EmployeeDirectory = employeeDirectoryNotConnected,
 ): Promise<ResourceData> {
   interface P {
     byProject: Map<string, number[]>;
     byDay: number[];
     work: Map<string, ProjectWork>;
     items: AllocItem[];
+    unscheduled: AllocItem[];
   }
   const personMap = new Map<string, P>();
   const projDay = new Map<string, { lead: string; byDay: number[]; people: Map<string, number> }>();
   const roleByName = new Map<string, string>();
   let done = 0;
 
+  // Active-employee roster (TimesheetPro EmployeeList). When connected, people
+  // whose EmployeeStatus is not "Active" are excluded from every rollup —
+  // people list, project allocation, and totals — so stale Boards assignments
+  // from inactive/left employees don't appear.
+  const activeNames = await employees.getActiveNames();
+  const restrictActive = employees.connected && activeNames.size > 0;
+  const isActive = (name: string): boolean =>
+    !restrictActive || activeNames.has(normalizeName(name));
+
   const ensure = (name: string): P => {
     let p = personMap.get(name);
     if (!p) {
-      p = { byProject: new Map(), byDay: period.days.map(() => 0), work: new Map(), items: [] };
+      p = { byProject: new Map(), byDay: period.days.map(() => 0), work: new Map(), items: [], unscheduled: [] };
       personMap.set(name, p);
     }
     return p;
@@ -306,6 +351,7 @@ export async function loadResourceData(
         const periodStart = period.days[0];
         const periodEnd = period.days[period.days.length - 1];
         for (const a of assignments) {
+          if (!isActive(a.assignee)) continue;
           const p = ensure(a.assignee);
           const w = ensureWork(p, project.name);
           if (a.done) {
@@ -320,13 +366,39 @@ export async function loadResourceData(
             continue;
           }
           w.inprog += 1;
-          const hrs = a.remainingWork > 0 ? a.remainingWork : Math.max(0, a.originalEstimate - a.completedWork);
+          // Planned effort = Original Estimate (the sprint plan). Fall back to
+          // Remaining Work only when an item has no estimate, so allocation
+          // reflects what was committed rather than what is left.
+          const hrs = a.originalEstimate > 0 ? a.originalEstimate : Math.max(0, a.remainingWork);
           if (hrs <= 0) continue;
-          const winStart = a.startDate ?? periodStart;
-          const winEnd = a.dueDate ?? periodEnd;
-          if (winEnd < periodStart || winStart > periodEnd) continue;
+          const sprintName = a.iterationPath ? a.iterationPath.split('\\').pop() : undefined;
+          // Placement window: explicit Start/Due wins; otherwise the item's
+          // SPRINT (iteration) window. An item with neither dates NOR a dated
+          // sprint is "unscheduled" — it is NOT smeared across the whole period
+          // (that inflated every current week); it is tracked separately so the
+          // PM can assign it to a sprint or set dates.
+          const wStart = a.startDate ?? a.sprintStart;
+          const wEnd = a.dueDate ?? a.sprintFinish;
+          const start = wStart ?? wEnd;
+          const end = wEnd ?? wStart;
+          if (!start || !end) {
+            p.unscheduled.push({
+              id: a.id,
+              title: a.title,
+              type: a.type,
+              state: a.state,
+              project: project.name,
+              sprint: sprintName,
+              startDate: a.startDate,
+              dueDate: a.dueDate,
+              hrs: round1(hrs),
+              day: period.days.map(() => 0),
+            });
+            continue;
+          }
+          if (end < periodStart || start > periodEnd) continue;
           const overlapIdx = period.days
-            .map((d, i) => (d >= winStart && d <= winEnd ? i : -1))
+            .map((d, i) => (d >= start && d <= end ? i : -1))
             .filter((i) => i >= 0);
           if (overlapIdx.length === 0) continue;
 
@@ -355,6 +427,9 @@ export async function loadResourceData(
             type: a.type,
             state: a.state,
             project: project.name,
+            sprint: sprintName,
+            sprintStart: a.sprintStart,
+            sprintFinish: a.sprintFinish,
             startDate: a.startDate,
             dueDate: a.dueDate,
             hrs: round1(hrs),
@@ -371,8 +446,8 @@ export async function loadResourceData(
   };
   await Promise.all(Array.from({ length: Math.min(5, projects.length || 1) }, worker));
 
-  const [leaveHours, tsHours] = await Promise.all([
-    leave.getLeaveHours(period),
+  const [leaveByDayMap, tsHours] = await Promise.all([
+    leave.getLeaveHoursByDay(period),
     timesheet.getTimesheetHours(period),
   ]);
 
@@ -381,7 +456,10 @@ export async function loadResourceData(
       // Provider maps are keyed by normalized names (SharePoint "X | Veelead"
       // vs ADO "X" display-name differences).
       const key = normalizeName(name);
-      const leaveHrs = leaveHours.get(key) ?? 0;
+      const leaveByDay = (leaveByDayMap.get(key) ?? period.days.map(() => 0)).map((h) =>
+        Math.min(HOURS_PER_DAY, round1(h)),
+      );
+      const leaveHrs = round1(leaveByDay.reduce((a, b) => a + b, 0));
       const capacityHrs = period.days.length * HOURS_PER_DAY;
       const effective = Math.max(1, capacityHrs - leaveHrs);
       const byProject: ProjectSplitDay[] = [...p.byProject.entries()]
@@ -397,6 +475,7 @@ export async function loadResourceData(
         role: roleByName.get(name) || '—',
         capacityHrs,
         leaveHrs,
+        leaveByDay,
         allocatedHrs,
         utilPct: Math.round((allocatedHrs / effective) * 100),
         byDay: p.byDay.map(round1),
@@ -405,9 +484,15 @@ export async function loadResourceData(
           .filter((w) => w.completed > 0 || w.inprog > 0)
           .sort((a, b) => b.completed - a.completed),
         items: [...p.items].sort((a, b) => b.hrs - a.hrs),
+        unscheduled: [...p.unscheduled].sort((a, b) => b.hrs - a.hrs),
+        unscheduledHrs: round1(p.unscheduled.reduce((a, b) => a + b.hrs, 0)),
         timesheetHrs: round1(tsHours.get(key)?.submitted ?? 0),
       };
     })
+    // Only people with current open work: anyone whose only footprint is
+    // historical (closed) items — including members removed from the org whose
+    // old assignments remain — is excluded from capacity/allocation views.
+    .filter((p) => p.allocatedHrs > 0 || p.work.some((w) => w.inprog > 0) || p.unscheduled.length > 0)
     .sort((a, b) => b.utilPct - a.utilPct);
 
   const projectRows: ProjectAllocation[] = [...projDay.entries()]

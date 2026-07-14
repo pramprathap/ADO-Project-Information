@@ -22,13 +22,25 @@ export function isSharePointConfigured(): boolean {
   return SHAREPOINT_CONFIG.clientId.length > 0;
 }
 
+/**
+ * The EXACT redirect URI MSAL uses — must be registered on the Entra app as a
+ * Single-page application redirect URI, character-for-character (no trailing
+ * slash). This is the iframe origin the extension is served from.
+ */
+export function getRedirectUri(): string {
+  return window.location.origin;
+}
+
 async function ensurePca(): Promise<PublicClientApplication> {
   if (!pca) {
+    // Surface the redirect URI so it can be copied into the Entra app if the
+    // popup fails with AADSTS500113 (no reply address registered).
+    console.info('[SharePoint] MSAL redirect URI (register this exactly, SPA platform):', getRedirectUri());
     pca = new PublicClientApplication({
       auth: {
         clientId: SHAREPOINT_CONFIG.clientId,
         authority: SHAREPOINT_CONFIG.authority,
-        redirectUri: window.location.origin,
+        redirectUri: getRedirectUri(),
       },
       cache: { cacheLocation: 'localStorage' },
     });
@@ -61,23 +73,64 @@ export async function getGraphTokenSilent(loginHint?: string): Promise<string | 
   }
 }
 
-/** Interactive popup (must be called from a user gesture). Null on failure. */
+/**
+ * Interactive popup (must be called from a user gesture). Null on failure.
+ * Forces a fresh consent so the returned token definitely carries the current
+ * scopes — this clears a stale cached token that predates the Sites.Read.All
+ * grant (the usual cause of a 403 on the site read).
+ */
 export async function getGraphTokenInteractive(loginHint?: string): Promise<string | null> {
   if (!isSharePointConfigured()) return null;
   try {
     const p = await ensurePca();
-    return remember(await p.acquireTokenPopup({ scopes: SCOPES, loginHint }));
+    await resetGraphAuth();
+    return remember(await p.acquireTokenPopup({ scopes: SCOPES, loginHint, prompt: 'consent' }));
   } catch (err) {
     console.warn('Graph interactive sign-in failed.', err);
     return null;
   }
 }
 
-/** GET a Graph URL with the token; throws on non-2xx. */
+/** Clear the cached account/token so the next sign-in mints a fresh one. */
+export async function resetGraphAuth(): Promise<void> {
+  account = null;
+  try {
+    await pca?.clearCache?.();
+  } catch (err) {
+    console.warn('Graph cache clear failed (non-fatal).', err);
+  }
+}
+
+/** Error carrying the HTTP status so callers can distinguish auth failures. */
+export class GraphError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GraphError';
+  }
+}
+
+/** True for 401/403 — token missing/expired or not authorized for the resource. */
+export function isGraphAuthError(err: unknown): boolean {
+  return err instanceof GraphError && (err.status === 401 || err.status === 403);
+}
+
+/** GET a Graph URL with the token; throws a {@link GraphError} on non-2xx. */
 export async function graphGet<T>(token: string, url: string): Promise<T> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  });
   if (!res.ok) {
-    throw new Error(`Graph request failed (${res.status}) for ${url}`);
+    let detail = '';
+    try {
+      detail = (await res.text()).slice(0, 400);
+    } catch {
+      /* body not readable */
+    }
+    throw new GraphError(res.status, `Graph request failed (${res.status}) for ${url}${detail ? ` — ${detail}` : ''}`);
   }
   return (await res.json()) as T;
 }

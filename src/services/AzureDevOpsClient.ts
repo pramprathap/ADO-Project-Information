@@ -72,6 +72,9 @@ export class AzureDevOpsClient {
           headers,
           body: bodyText,
           signal: controller.signal,
+          // Reports must reflect Boards edits immediately — never serve a GET
+          // from the browser HTTP cache.
+          cache: 'no-store',
         });
 
         if (!response.ok) {

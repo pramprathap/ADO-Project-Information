@@ -113,6 +113,22 @@ interface StoredClientContact {
  * name/email properties when the JSON list is absent (backward compatibility).
  * Capped at MAX_CLIENT_CONTACTS.
  */
+/** Safely parse the JSON epic-tag map ({ [epicId]: tag }). */
+function readEpicTags(raw: string): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (/^\d+$/.test(k) && typeof v === 'string' && v.length <= 60) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 function readClientContacts(
   raw: string,
   legacyName: string | undefined,
@@ -252,6 +268,7 @@ export function fromProperties(bag: PropertyBag): ProjectInformation {
   );
 
   info.team = readTeam(str(bag, PropertyKeys.ProjectTeam));
+  info.epicTags = readEpicTags(str(bag, PropertyKeys.EpicTags));
 
   info.technologyStack = optionalStr(bag, PropertyKeys.TechnologyStack) ?? '';
   info.repositorySource = enumOrUndefined<RepositorySource>(
@@ -382,6 +399,11 @@ export function toPropertyBag(info: ProjectInformation): PropertyBag {
     }));
   if (teamRows.length > 0) {
     bag[PropertyKeys.ProjectTeam] = JSON.stringify(teamRows);
+  }
+
+  const epicTagEntries = Object.entries(info.epicTags ?? {}).filter(([, v]) => v);
+  if (epicTagEntries.length > 0) {
+    bag[PropertyKeys.EpicTags] = JSON.stringify(Object.fromEntries(epicTagEntries));
   }
 
   put(PropertyKeys.TechnologyStack, info.technologyStack);
