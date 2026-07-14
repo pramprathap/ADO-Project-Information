@@ -115,6 +115,12 @@ export function createMockAppServices(): AppServices {
   } as unknown as ClientDirectoryService;
 
   const workItems = {
+    async getEpicList(): Promise<{ id: number; title: string; state: string }[]> {
+      return [
+        { id: 21863, title: 'PRC Application Delivery', state: 'Active' },
+        { id: 21970, title: 'Support & Enhancements', state: 'Closed' },
+      ];
+    },
     async getReport(): Promise<ProjectReportMetrics> {
       return {
         asOf: '2026-07-11T09:00:00.000Z',

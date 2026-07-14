@@ -36,6 +36,11 @@ export interface AssignmentItem {
   originalEstimate: number;
   remainingWork: number;
   completedWork: number;
+  /** Sprint (iteration) the item is assigned to, e.g. "Project\Sprint 3". */
+  iterationPath?: string;
+  /** Start/finish of that sprint (from the iteration definition), if dated. */
+  sprintStart?: string;
+  sprintFinish?: string;
 }
 
 /** Options that gate project-level milestone visibility (from Project Information). */
@@ -44,6 +49,8 @@ export interface ReportOptions {
   currentPhase?: string;
   /** Project Information "Project Type" value. */
   projectType?: string;
+  /** Per-Epic classification tags from Project Information ({ epicId: tag }). */
+  epicTags?: Record<string, string>;
 }
 
 const WIQL_VERSION = '7.1';
@@ -171,6 +178,22 @@ function isDone(state: string): boolean {
 
 function isNotStarted(state: string): boolean {
   return NOT_STARTED_STATES.has(state.trim().toLowerCase());
+}
+
+/**
+ * Normalize an iteration path for matching. Classification-node paths look like
+ * `\Project\Iteration\Sprint 1`, while a work item's `System.IterationPath` is
+ * `Project\Sprint 1` — strip the leading slash and the `\Iteration` group node
+ * so both sides compare equal.
+ */
+function normIterPath(path: string): string {
+  return path
+    .replace(/^\\+/, '')
+    .replace(/\\+$/, '')
+    .replace(/\\Iteration\\/i, '\\')
+    .replace(/\\Iteration$/i, '')
+    .trim()
+    .toLowerCase();
 }
 
 /** Local calendar date (YYYY-MM-DD) for a Date, in the viewer's timezone. */
@@ -424,6 +447,7 @@ export class WorkItemService {
     childrenByParent: Map<number, { id: number; fields: WorkItemFields }[]>,
     refs: Record<string, string>,
     today: string,
+    epicTags: Record<string, string> = {},
   ): EpicSummary[] {
     const epicTypeRef = refs['epic type'];
     const leadRef = refs['lead'];
@@ -431,9 +455,12 @@ export class WorkItemService {
 
     return epics
       .map((epic) => {
-        const epicType = epicTypeRef ? str(epic.fields, epicTypeRef) : '';
-        // Without an EPIC Type field we cannot tell — assume phased (show timeline).
-        const isDevelopment = epicTypeRef ? isDevelopmentValue(epicType) : true;
+        // The Project Information epic tag (set on the form) overrides the
+        // board's custom "EPIC Type" field.
+        const tag = epicTags[String(epic.id)];
+        const epicType = tag || (epicTypeRef ? str(epic.fields, epicTypeRef) : '');
+        // Without any classification we cannot tell — assume phased (timeline).
+        const isDevelopment = epicType ? isDevelopmentValue(epicType) : true;
         const epicDone = isDone(str(epic.fields, 'System.State'));
         const descendants = collectDescendants(epic.id, childrenByParent);
 
@@ -486,6 +513,31 @@ export class WorkItemService {
       .sort((a, b) => Number(b.isDevelopment) - Number(a.isDevelopment) || a.id - b.id);
   }
 
+  /** Map of normalized iteration path → sprint start/finish (dated nodes only). */
+  private async getIterationWindows(): Promise<Map<string, { start?: string; finish?: string }>> {
+    const map = new Map<string, { start?: string; finish?: string }>();
+    try {
+      const root = await this.client.request<ClassificationNode>(
+        this.orgBaseUrl,
+        `${this.projectSegment}/_apis/wit/classificationnodes/iterations`,
+        { method: 'GET', apiVersion: WIQL_VERSION, query: { $depth: 10 } },
+      );
+      const walk = (node?: ClassificationNode): void => {
+        if (!node) return;
+        const start = toDateOnly(node.attributes?.startDate ?? '');
+        const finish = toDateOnly(node.attributes?.finishDate ?? '');
+        if ((start || finish) && node.path) {
+          map.set(normIterPath(node.path), { start: start || undefined, finish: finish || undefined });
+        }
+        (node.children ?? []).forEach(walk);
+      };
+      walk(root);
+    } catch (err) {
+      console.warn('Failed to load iteration windows for allocation.', err);
+    }
+    return map;
+  }
+
   private async getSprints(): Promise<SprintSummary[]> {
     try {
       const root = await this.client.request<ClassificationNode>(
@@ -534,7 +586,12 @@ export class WorkItemService {
    * not enabled (the caller then falls back to the best-effort trend).
    */
   private async fetchWeeklyRemaining(weekEnds: string[]): Promise<Map<string, number> | undefined> {
-    if (!this.analyticsBaseUrl || weekEnds.length === 0) {
+    // The Analytics OData host does not accept extension bearer tokens from the
+    // extension iframe (CORS + 401), so the attempt only produced console noise.
+    // The burn-down uses the reconstructed trend until a supported auth path
+    // (e.g. the middle-tier API) provides real snapshots.
+    const ANALYTICS_DISABLED = true;
+    if (ANALYTICS_DISABLED || !this.analyticsBaseUrl || weekEnds.length === 0) {
       return undefined;
     }
     try {
@@ -704,6 +761,26 @@ export class WorkItemService {
     };
   }
 
+  /** Lightweight Epic list for the Project Information form (id/title/state). */
+  async getEpicList(): Promise<{ id: number; title: string; state: string }[]> {
+    const allIds = await this.wiqlIds();
+    if (allIds.length === 0) return [];
+    const items = await this.batch(allIds.slice(0, MAX_ITEMS), [
+      'System.Id',
+      'System.WorkItemType',
+      'System.Title',
+      'System.State',
+    ]);
+    return items
+      .filter(({ fields }) => str(fields, 'System.WorkItemType') === 'Epic')
+      .map(({ id, fields }) => ({
+        id,
+        title: str(fields, 'System.Title'),
+        state: str(fields, 'System.State'),
+      }))
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }
+
   /**
    * Per-assignee open workload for the Resource Allocation page: every open
    * (not done) Task/Bug/User Story with an assignee, with its scheduling window
@@ -717,6 +794,7 @@ export class WorkItemService {
       'System.WorkItemType',
       'System.State',
       'System.AssignedTo',
+      'System.IterationPath',
       'Microsoft.VSTS.Scheduling.StartDate',
       'Microsoft.VSTS.Scheduling.DueDate',
       'Microsoft.VSTS.Scheduling.OriginalEstimate',
@@ -725,7 +803,10 @@ export class WorkItemService {
       'Microsoft.VSTS.Common.ClosedDate',
       'Microsoft.VSTS.Common.StateChangeDate',
     ];
-    const items = allIds.length > 0 ? await this.batch(allIds.slice(0, MAX_ITEMS), fields) : [];
+    const [items, iterWindows] = await Promise.all([
+      allIds.length > 0 ? this.batch(allIds.slice(0, MAX_ITEMS), fields) : Promise.resolve([]),
+      this.getIterationWindows(),
+    ]);
     const out: AssignmentItem[] = [];
     for (const { id, fields: f } of items) {
       const type = str(f, 'System.WorkItemType');
@@ -733,6 +814,8 @@ export class WorkItemService {
       const assignee = assignedName(f);
       if (!assignee) continue;
       const state = str(f, 'System.State');
+      const iterationPath = str(f, 'System.IterationPath');
+      const win = iterationPath ? iterWindows.get(normIterPath(iterationPath)) : undefined;
       out.push({
         id,
         title: str(f, 'System.Title'),
@@ -740,6 +823,9 @@ export class WorkItemService {
         type,
         state,
         done: isDone(state),
+        iterationPath: iterationPath || undefined,
+        sprintStart: win?.start,
+        sprintFinish: win?.finish,
         startDate: toDateOnly(str(f, 'Microsoft.VSTS.Scheduling.StartDate')),
         dueDate: toDateOnly(str(f, 'Microsoft.VSTS.Scheduling.DueDate')),
         closedDate: toDateOnly(
@@ -796,7 +882,7 @@ export class WorkItemService {
       pending: sprints.filter((s) => s.timeframe === 'future').length,
     };
 
-    const epics = this.buildEpics(items, childrenByParent, refs, today);
+    const epics = this.buildEpics(items, childrenByParent, refs, today, opts.epicTags ?? {});
 
     // Project-level open items + milestone gating.
     const projectOpenItems = items
@@ -926,8 +1012,25 @@ export class WorkItemService {
       );
     }
 
+    // Drop childless duplicates: when two Epic work items share a title and one
+    // has real children, the empty twin only confuses the selector (its scope
+    // used to fall back to project-wide numbers).
+    const populatedTitles = new Set(
+      epics.filter((e) => (e.report?.total ?? 0) > 0).map((e) => e.title.trim().toLowerCase()),
+    );
+    const dedupedEpics = epics.filter(
+      (e) => (e.report?.total ?? 0) > 0 || !populatedTitles.has(e.title.trim().toLowerCase()),
+    );
+
     // The returned (default) report is project-wide.
-    return assemble(items, projectOpenItems, projMilestones, projMilestonesAvailable, epics, true);
+    return assemble(
+      items,
+      projectOpenItems,
+      projMilestones,
+      projMilestonesAvailable,
+      dedupedEpics,
+      true,
+    );
   }
 
   /** Aggregate all per-item report sections for a scope (project or one Epic). */
@@ -1235,15 +1338,22 @@ function milestoneFrom(
   const revisedCount = Number.isFinite(rcRaw) ? Math.max(0, rcRaw) : 0;
   const effective = revised ?? target;
   const overdue = !!effective && effective < today && !done;
+  // Status follows the Feature's actual state, not just its date: New / Proposed
+  // / Approved / To-Do → planned (upcoming); Active / Committed / Resolved / etc.
+  // → in-progress. A past date on an unfinished item is overdue; a missing date
+  // on a started item is still in-progress, otherwise "not set".
+  const started = !isNotStarted(state);
   let status: MilestoneStatus = 'upcoming';
   if (done) {
     status = 'completed';
   } else if (overdue) {
     status = 'overdue';
+  } else if (started) {
+    status = 'in-progress';
   } else if (!effective) {
     status = 'not-set';
-  } else if (effective >= today) {
-    status = 'in-progress';
+  } else {
+    status = 'upcoming';
   }
   return {
     phase,

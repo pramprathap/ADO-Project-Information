@@ -240,10 +240,14 @@ function HealthHeader({
   const start = fmtMilestone(info?.projectStartDate || undefined);
   // Prefer the selected Epic's Go-Live milestone date; fall back to Planned End.
   const goLive = (epic?.isDevelopment && epic.goLiveDate) || info?.plannedEndDate || '';
-  // Delivered when the PM marked it Completed, the selected epic is closed, or
-  // every work item in scope is done.
+  // Delivered when the PM marked it Completed/Closed, the selected epic is
+  // closed, or every work item in scope is done.
   const allDone = !!metrics && metrics.total > 0 && metrics.completed === metrics.total;
-  const completed = info?.projectStatus === 'Completed' || !!epic?.completed || allDone;
+  const completed =
+    info?.projectStatus === 'Completed' ||
+    info?.currentPhase === 'Closed' ||
+    !!epic?.completed ||
+    allDone;
 
   // Subtitle: only the facts that exist — no "— · — · Planned — → —" noise.
   const subParts = [client, lead, billing].filter(Boolean);
@@ -277,12 +281,24 @@ function HealthHeader({
   const soSub = soCompleted ? 'Signed off' : soOverdue ? `Overdue ${signOffMs?.slipDays ?? 0}d` : 'Pending';
 
   return (
-    <div className={styles.hero}>
+    <div
+      className={styles.hero}
+      style={
+        completed
+          ? { background: 'linear-gradient(135deg, #1f7a44 0%, #14532d 100%)' }
+          : undefined
+      }
+    >
       <div className={styles.heroLeft}>
         <div className={styles.titleRow}>
-          <span className={styles.dot} style={{ backgroundColor: dotColor }} />
+          <span className={styles.dot} style={{ backgroundColor: completed ? '#a7f3d0' : dotColor }} />
           <span className={styles.heroTitle}>{projectName}</span>
           <span className={styles.trackChip}>{track}</span>
+          {completed && (
+            <span className={styles.trackChip} style={{ backgroundColor: 'rgba(255,255,255,.28)' }}>
+              ✓ Closed
+            </span>
+          )}
         </div>
         <div className={styles.heroSub}>{subParts.join(' · ')}</div>
       </div>
@@ -443,7 +459,7 @@ function MilestonesTimeline({
                   ? 'NOT SET'
                   : m.status === 'in-progress'
                     ? 'IN PROGRESS'
-                    : 'UPCOMING';
+                    : 'PLANNED';
           // Arrow connectors run between consecutive phases up to and including
           // Sign-Off (the Epic's target date). The final node draws none, so no
           // line trails past the end stage.
@@ -504,25 +520,37 @@ function EpicSelector({
   epics,
   selectedId,
   onSelect,
+  projectLead,
 }: {
   epics: EpicSummary[];
-  selectedId: number;
-  onSelect: (id: number) => void;
+  selectedId: number | null;
+  onSelect: (id: number | null) => void;
+  projectLead?: string;
 }) {
   const styles = useStyles();
-  const selected = epics.find((e) => e.id === selectedId) ?? epics[0];
+  const selected = epics.find((e) => e.id === selectedId) ?? null;
   return (
     <div className={styles.card}>
       <div className={styles.epicHead}>
         <span className={styles.mTitle}>Epics</span>
         <span className={styles.mMuted} style={{ fontSize: 12 }}>
-          · {epics.length} in this project · each with its own Go-Live, lead, blockers &
-          clarifications
+          · {epics.length} in this project · select one to scope the whole report to it
         </span>
       </div>
       <div className={styles.epicTiles}>
+        <button
+          type="button"
+          className={`${styles.epicTile} ${!selected ? styles.epicTileActive : ''}`}
+          onClick={() => onSelect(null)}
+        >
+          <span className={styles.epicDotName}>
+            <span className={styles.dot} style={{ backgroundColor: '#8a94a6' }} />
+            <span className={styles.epicName}>All Epics</span>
+          </span>
+          <span className={styles.epicSub}>whole project</span>
+        </button>
         {epics.map((e, i) => {
-          const active = e.id === selected.id;
+          const active = e.id === selected?.id;
           const doneStyle =
             e.completed && !active ? { backgroundColor: 'var(--pi-good-bg)' } : undefined;
           return (
@@ -531,7 +559,7 @@ function EpicSelector({
               type="button"
               className={`${styles.epicTile} ${active ? styles.epicTileActive : ''}`}
               style={doneStyle}
-              onClick={() => onSelect(e.id)}
+              onClick={() => onSelect(active ? null : e.id)}
             >
               <span className={styles.epicDotName}>
                 {e.completed ? (
@@ -546,24 +574,38 @@ function EpicSelector({
                 )}
                 <span className={styles.epicName}>{e.title}</span>
               </span>
-              <span className={styles.epicSub}>Go-Live {e.goLiveStatus}</span>
+              <span className={styles.epicSub}>
+                Go-Live {e.goLiveStatus}
+                {e.report && e.report.total === 0 ? ' · no items' : ''}
+              </span>
             </button>
           );
         })}
       </div>
       <div className={styles.epicMeta}>
         <span>
-          Project lead <b>{selected.lead || '—'}</b>
+          Project lead <b>{projectLead || '—'}</b>
         </span>
-        <span>
-          Board state <b style={{ color: '#0a6cc2' }}>{selected.state || '—'}</b>
-        </span>
-        <span>
-          Open blockers <b style={{ color: selected.openBlockers ? '#C0291C' : undefined }}>{selected.openBlockers}</b>
-        </span>
-        {selected.openClarifications > 0 && (
-          <span>
-            Clarifications <b>{selected.openClarifications}</b>
+        {selected ? (
+          <>
+            <span>
+              Epic lead <b>{selected.lead || '—'}</b>
+            </span>
+            <span>
+              Board state <b style={{ color: '#0a6cc2' }}>{selected.state || '—'}</b>
+            </span>
+            <span>
+              Open blockers <b style={{ color: selected.openBlockers ? '#C0291C' : undefined }}>{selected.openBlockers}</b>
+            </span>
+            {selected.openClarifications > 0 && (
+              <span>
+                Clarifications <b>{selected.openClarifications}</b>
+              </span>
+            )}
+          </>
+        ) : (
+          <span style={{ color: 'var(--pi-neutral-swatch)' }}>
+            Viewing the whole project — select an Epic to scope every section to it.
           </span>
         )}
       </div>
@@ -598,8 +640,10 @@ export function ProjectHealthPage({ services }: { services: AppServices }) {
   );
 
   const epics = metrics?.epics ?? [];
-  const selectedEpic: EpicSummary | null =
-    epics.find((e) => e.id === selectedEpicId) ?? epics[0] ?? null;
+  // Default scope is the WHOLE PROJECT — an Epic only scopes the report when
+  // the user explicitly selects its tile (QC: auto-selecting the first epic
+  // made every KPI look wrong/partial).
+  const selectedEpic: EpicSummary | null = epics.find((e) => e.id === selectedEpicId) ?? null;
 
   // Milestones shown come from the selected Epic (multi-epic projects) or the
   // project-level roll-up when there are no Epics.
@@ -654,8 +698,11 @@ export function ProjectHealthPage({ services }: { services: AppServices }) {
           {epics.length > 0 && (
             <EpicSelector
               epics={epics}
-              selectedId={selectedEpic?.id ?? 0}
+              selectedId={selectedEpic?.id ?? null}
               onSelect={setSelectedEpicId}
+              projectLead={
+                info?.projectManager?.displayName || info?.deliveryManager?.displayName || undefined
+              }
             />
           )}
           <MilestonesTimeline

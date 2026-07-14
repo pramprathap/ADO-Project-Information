@@ -67,6 +67,9 @@ export const PropertyKeys = {
   /** Project team stored as a JSON array of { role, descriptor, displayName, email }. */
   ProjectTeam: 'Veelead.ProjectInformation.ProjectTeam',
 
+  /** Per-Epic classification stored as a JSON map of { [epicId]: tag }. */
+  EpicTags: 'Veelead.ProjectInformation.EpicTags',
+
   // G. Technical Information
   TechnologyStack: 'Veelead.ProjectInformation.TechnologyStack',
   RepositorySource: 'Veelead.ProjectInformation.RepositorySource',

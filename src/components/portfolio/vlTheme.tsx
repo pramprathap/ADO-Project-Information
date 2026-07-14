@@ -32,6 +32,7 @@ export function ensureVlThemeCss(): void {
   --vl-brandText:#9daaf0;
 }
 .vl-canvas .vl-row:hover{ background: var(--vl-hover) !important; }
+@keyframes vlSpin { to { transform: rotate(360deg); } }
 @media print {
   .vl-canvas, .vl-canvas.vl-dark{
     color-scheme: light;

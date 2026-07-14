@@ -1,6 +1,12 @@
 import { SHAREPOINT_CONFIG } from '@/constants/sharepointConfig';
-import { graphGet, getGraphTokenSilent, isSharePointConfigured } from './graphClient';
-import type { LeaveProvider, Period, TimesheetProvider } from './resourceService';
+import {
+  graphGet,
+  getGraphTokenSilent,
+  isGraphAuthError,
+  isSharePointConfigured,
+  resetGraphAuth,
+} from './graphClient';
+import type { EmployeeDirectory, LeaveProvider, Period, TimesheetProvider } from './resourceService';
 
 /**
  * Live SharePoint providers (Microsoft Graph, delegated).
@@ -45,16 +51,35 @@ interface ItemsResponse {
 
 const siteIdCache = new Map<string, string>();
 
-async function resolveSiteId(token: string, sitePath: string): Promise<string> {
+/**
+ * Resolve a site id. An explicit id from the config wins; otherwise the path is
+ * resolved via Graph — and if a nested path like /sites/Data/LMS is not an
+ * actual subsite, we fall back to its parent (/sites/Data), where the lists
+ * live in that case.
+ */
+async function resolveSiteId(token: string, sitePath: string, explicitId?: string): Promise<string> {
+  if (explicitId) return explicitId;
   const cached = siteIdCache.get(sitePath);
   if (cached) return cached;
-  const res = await graphGet<{ id?: string }>(
-    token,
-    `${GRAPH}/sites/${SHAREPOINT_CONFIG.host}:${sitePath}`,
-  );
-  if (!res.id) throw new Error(`Site not found: ${sitePath}`);
-  siteIdCache.set(sitePath, res.id);
-  return res.id;
+  const byPath = async (p: string): Promise<string | null> => {
+    try {
+      const res = await graphGet<{ id?: string }>(token, `${GRAPH}/sites/${SHAREPOINT_CONFIG.host}:${p}`);
+      return res.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+  let id = await byPath(sitePath);
+  if (!id) {
+    const parent = sitePath.replace(/\/[^/]+$/, '');
+    if (parent && parent !== sitePath && parent !== '/sites') {
+      console.warn(`Site path ${sitePath} not found — falling back to ${parent}.`);
+      id = await byPath(parent);
+    }
+  }
+  if (!id) throw new Error(`Site not found: ${sitePath}`);
+  siteIdCache.set(sitePath, id);
+  return id;
 }
 
 async function columnMap(token: string, siteId: string, list: string): Promise<Map<string, string>> {
@@ -112,9 +137,26 @@ export function normalizeName(name: string): string {
     .toLowerCase();
 }
 
+/**
+ * Normalize a SharePoint date value to `YYYY-MM-DD`. Graph usually returns ISO
+ * 8601, but text/locale-formatted columns can surface as `M/D/YYYY` — accept
+ * both, otherwise the row is silently dropped (which zeroed all leave).
+ */
 function dateOnly(v: unknown): string {
-  const s = typeof v === 'string' ? v : '';
-  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
+  const s = typeof v === 'string' ? v.trim() : '';
+  if (!s) return '';
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  // US M/D/YYYY (SharePoint display fallback — 4/15/2026 = 15 Apr).
+  const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (us) return `${us[3]}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}`;
+  // Last resort: let the engine parse it, then read UTC parts.
+  const t = Date.parse(s);
+  if (!Number.isNaN(t)) {
+    const d = new Date(t);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+  return '';
 }
 function num(v: unknown): number {
   const n = Number(v);
@@ -152,7 +194,7 @@ export class GraphLeaveProvider implements LeaveProvider {
         this.status = 'auth-required';
         return null;
       }
-      const siteId = await resolveSiteId(token, SHAREPOINT_CONFIG.lmsSitePath);
+      const siteId = await resolveSiteId(token, SHAREPOINT_CONFIG.lmsSitePath, SHAREPOINT_CONFIG.lmsSiteId);
       const cols = await columnMap(token, siteId, SHAREPOINT_CONFIG.leaveListName);
       const f = (label: string, fallback: string): string => cols.get(label) ?? fallback;
       const cRequestedBy = f('requested by', 'RequestedBy');
@@ -186,10 +228,19 @@ export class GraphLeaveProvider implements LeaveProvider {
       }
       this.rows = rows;
       this.status = 'ok';
+      console.info(
+        `[SharePoint] LMS leave: ${raw.length} rows read, ${rows.length} approved non-WFH parsed.`,
+        rows.slice(0, 8).map((r) => `${r.who} ${r.from}→${r.to}`),
+      );
       return rows;
     } catch (err) {
       console.warn('Leave (LMS) fetch failed.', err);
-      this.status = 'error';
+      if (isGraphAuthError(err)) {
+        this.status = 'auth-required';
+        void resetGraphAuth();
+      } else {
+        this.status = 'error';
+      }
       return null;
     }
   }
@@ -205,6 +256,29 @@ export class GraphLeaveProvider implements LeaveProvider {
       if (days <= 0) continue;
       const hrs = days === 1 && r.half && !/^na$/i.test(r.half) ? HOURS_PER_DAY / 2 : days * HOURS_PER_DAY;
       out.set(r.who, (out.get(r.who) ?? 0) + hrs);
+    }
+    return out;
+  }
+
+  /** Approved leave hours per working day of the period, per person. */
+  async getLeaveHoursByDay(period: Period): Promise<Map<string, number[]>> {
+    const out = new Map<string, number[]>();
+    const rows = await this.fetchRows();
+    if (!rows) return out;
+    for (const r of rows) {
+      if (r.isWfh) continue;
+      const coveredIdx = period.days
+        .map((d, i) => (d >= r.from && d <= r.to ? i : -1))
+        .filter((i) => i >= 0);
+      if (coveredIdx.length === 0) continue;
+      // A half-day flag only applies to a single-day leave.
+      const perDay =
+        coveredIdx.length === 1 && r.half && !/^na$/i.test(r.half)
+          ? HOURS_PER_DAY / 2
+          : HOURS_PER_DAY;
+      const arr = out.get(r.who) ?? period.days.map(() => 0);
+      for (const i of coveredIdx) arr[i] = Math.min(HOURS_PER_DAY, arr[i] + perDay);
+      out.set(r.who, arr);
     }
     return out;
   }
@@ -234,6 +308,69 @@ export class GraphLeaveProvider implements LeaveProvider {
       });
     }
     return out;
+  }
+}
+
+// ---------------------------------------------------------------- employees
+/**
+ * Reads the TimesheetPro `EmployeeList` and exposes the set of currently-Active
+ * employees (normalized names). The resource views use this to hide people
+ * whose `EmployeeStatus` is not "Active" (e.g. left the company / inactive),
+ * even if stale Boards assignments still reference them.
+ */
+export class GraphEmployeeProvider implements EmployeeDirectory {
+  status: SpStatus = isSharePointConfigured() ? 'auth-required' : 'disabled';
+  private names: Set<string> | null = null;
+  constructor(private readonly loginHint?: string) {}
+
+  get connected(): boolean {
+    return this.status === 'ok';
+  }
+
+  async getActiveNames(): Promise<Set<string>> {
+    if (this.names) return this.names;
+    if (!isSharePointConfigured()) {
+      this.status = 'disabled';
+      return new Set();
+    }
+    try {
+      const token = await getGraphTokenSilent(this.loginHint);
+      if (!token) {
+        this.status = 'auth-required';
+        return new Set();
+      }
+      const siteId = await resolveSiteId(
+        token,
+        SHAREPOINT_CONFIG.timesheetSitePath,
+        SHAREPOINT_CONFIG.timesheetSiteId,
+      );
+      const cols = await columnMap(token, siteId, SHAREPOINT_CONFIG.employeeListName);
+      const f = (label: string, fallback: string): string => cols.get(label) ?? fallback;
+      const cEmployee = f('employee', 'Employee');
+      const cStatus = f('employeestatus', 'EmployeeStatus');
+      const raw = await listItems(token, siteId, SHAREPOINT_CONFIG.employeeListName, [
+        cEmployee,
+        cStatus,
+      ]);
+      const set = new Set<string>();
+      for (const r of raw) {
+        if (!/^\s*active\s*$/i.test(String(r[cStatus] ?? ''))) continue;
+        const who = normalizeName(personName(r[cEmployee]));
+        if (who) set.add(who);
+      }
+      this.names = set;
+      this.status = 'ok';
+      return set;
+    } catch (err) {
+      console.warn('EmployeeList (TimesheetPro) fetch failed.', err);
+      if (isGraphAuthError(err)) {
+        this.status = 'auth-required';
+        void resetGraphAuth();
+      } else {
+        this.status = 'error';
+      }
+      return new Set();
+    }
   }
 }
 
@@ -267,7 +404,7 @@ export class GraphTimesheetProvider implements TimesheetProvider {
         this.status = 'auth-required';
         return null;
       }
-      const siteId = await resolveSiteId(token, SHAREPOINT_CONFIG.timesheetSitePath);
+      const siteId = await resolveSiteId(token, SHAREPOINT_CONFIG.timesheetSitePath, SHAREPOINT_CONFIG.timesheetSiteId);
       const cols = await columnMap(token, siteId, SHAREPOINT_CONFIG.timesheetListName);
       const f = (label: string, fallback: string): string => cols.get(label) ?? fallback;
       const cEmployee = f('employee', 'Employee');
@@ -292,7 +429,12 @@ export class GraphTimesheetProvider implements TimesheetProvider {
       return rows;
     } catch (err) {
       console.warn('Timesheet (TimesheetPro) fetch failed.', err);
-      this.status = 'error';
+      if (isGraphAuthError(err)) {
+        this.status = 'auth-required';
+        void resetGraphAuth();
+      } else {
+        this.status = 'error';
+      }
       return null;
     }
   }

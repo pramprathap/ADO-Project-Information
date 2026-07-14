@@ -6,8 +6,12 @@ import { MultiSelect } from './MultiSelect';
 import { listActiveProjects, resolveOrgContext, type OrgContext, type ProjectRef } from '@/services/orgServices';
 import { monthPeriod, weekOptions, weekPeriod, type Period, type PeriodMode } from '@/services/resourceService';
 import { loadEffortData, type EffortData, type EffortRow } from '@/services/effortService';
-import { GraphLeaveProvider, GraphTimesheetProvider } from '@/services/sharePointProviders';
-import { getGraphTokenInteractive, isSharePointConfigured } from '@/services/graphClient';
+import {
+  GraphEmployeeProvider,
+  GraphLeaveProvider,
+  GraphTimesheetProvider,
+} from '@/services/sharePointProviders';
+import { getGraphTokenInteractive, getRedirectUri, isSharePointConfigured } from '@/services/graphClient';
 import { MOCK_EFFORT_DATA } from '@/services/mockEffort';
 import { useVlDark, vlCanvasClass } from './vlTheme';
 
@@ -121,9 +125,18 @@ export function EffortTimesheetPage() {
         setProgress({ done: 0, total: projects.length });
         const leave = new GraphLeaveProvider(loginHintRef.current);
         const timesheet = new GraphTimesheetProvider(loginHintRef.current);
-        const result = await loadEffortData(org, projects, period, leave, timesheet, (d, t) => {
-          if (!cancelled) setProgress({ done: d, total: t });
-        });
+        const employees = new GraphEmployeeProvider(loginHintRef.current);
+        const result = await loadEffortData(
+          org,
+          projects,
+          period,
+          leave,
+          timesheet,
+          (d, t) => {
+            if (!cancelled) setProgress({ done: d, total: t });
+          },
+          employees,
+        );
         if (!cancelled) {
           setData(result);
           setSpNeedsAuth(leave.status === 'auth-required' || timesheet.status === 'auth-required');
@@ -289,6 +302,10 @@ function EffortBody({
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', background: 'var(--vl-navySoft)', border: `1px solid ${C.navy}`, borderRadius: 8, padding: '10px 14px', marginBottom: 12 }}>
           <span style={{ fontSize: 12, color: 'var(--vl-brandText)' }}><b>Connect SharePoint</b> to load Timesheet (TimesheetPro) and Leave (LMS) data.</span>
           <div onClick={onConnect} style={{ cursor: 'pointer', background: C.navy, color: '#fff', fontSize: 12, fontWeight: 700, borderRadius: 5, padding: '7px 16px' }}>Connect SharePoint</div>
+          <span style={{ fontSize: 11, color: C.faint, width: '100%' }}>
+            AADSTS500113? Register this exact value as a <b>Single-page application</b> redirect URI:
+            <code style={{ marginLeft: 6, padding: '2px 6px', borderRadius: 4, background: 'var(--vl-track)', color: 'var(--vl-ink2)', userSelect: 'all', fontWeight: 700 }}>{getRedirectUri()}</code>
+          </span>
         </div>
       )}
       {!isSharePointConfigured() && (

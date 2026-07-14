@@ -71,7 +71,27 @@ export function OverviewPage() {
   const [projects, setProjects] = useState<PortfolioProject[]>([]);
   const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
   const [drill, setDrill] = useState<PortfolioProject | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const notified = useRef(false);
+
+  // Soft refresh: re-fetch everything in the background while the current data
+  // stays on screen; swap in the new snapshot when it lands.
+  const refresh = async (): Promise<void> => {
+    if (refreshing) return;
+    if (import.meta.env.DEV) return;
+    if (!org) return;
+    setRefreshing(true);
+    try {
+      const list = await listProjects(org);
+      setProgress({ done: 0, total: list.length });
+      const data = await loadPortfolio(org, list, (done, total) => setProgress({ done, total }));
+      setProjects(data);
+    } catch (err) {
+      console.error('Overview refresh failed.', err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -154,16 +174,30 @@ export function OverviewPage() {
     );
   }
 
-  return <OverviewBody projects={projects} onOpenProject={setDrill} />;
+  return (
+    <OverviewBody
+      projects={projects}
+      onOpenProject={setDrill}
+      onRefresh={() => void refresh()}
+      refreshing={refreshing}
+      refreshProgress={progress}
+    />
+  );
 }
 
 // ------------------------------------------------------------------ presentational
 function OverviewBody({
   projects,
   onOpenProject,
+  onRefresh,
+  refreshing,
+  refreshProgress,
 }: {
   projects: PortfolioProject[];
   onOpenProject: (p: PortfolioProject) => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+  refreshProgress: { done: number; total: number };
 }) {
   const dark = useVlDark();
   // Projects whose Current Phase is Closed are excluded from every metric and
@@ -276,9 +310,65 @@ function OverviewBody({
     [active],
   );
 
+  // Card-driven grid filter: clicking a KPI card scopes the Projects grid to
+  // the projects behind that number (click again to clear).
+  type CardFilter =
+    | ''
+    | 'inDelivery'
+    | 'support'
+    | 'resourcing'
+    | 'internal'
+    | 'closed'
+    | 'overdue'
+    | 'tasks'
+    | 'bugs'
+    | 'items';
+  const [cardFilter, setCardFilter] = useState<CardFilter>('');
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const CARD_LABEL: Record<Exclude<CardFilter, ''>, string> = {
+    inDelivery: 'In Delivery',
+    support: 'Support',
+    resourcing: 'Resourcing Model',
+    internal: 'Internal',
+    closed: 'Closed Projects',
+    overdue: 'Overdue Projects',
+    tasks: 'with open tasks',
+    bugs: 'with open bugs',
+    items: 'with open items',
+  };
+  const pickCard = (f: Exclude<CardFilter, ''>): void => {
+    setCardFilter((cur) => (cur === f ? '' : f));
+    gridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  const cardMatch = (p: PortfolioProject): boolean => {
+    switch (cardFilter) {
+      case 'inDelivery':
+        return p.statusRaw === 'InProgress';
+      case 'support':
+        return p.projectTypeRaw === 'Support';
+      case 'resourcing':
+        return p.projectTypeRaw === 'ResourcingModel';
+      case 'internal':
+        return p.projectTypeRaw === 'Internal';
+      case 'overdue':
+        return !p.isInternalish && (p.isOverdue || p.summary.overdue > 0);
+      case 'tasks':
+        return p.summary.tasksOpen > 0;
+      case 'bugs':
+        return p.summary.bugsOpen > 0;
+      case 'items':
+        return p.summary.openItemsCount > 0;
+      default:
+        return true;
+    }
+  };
+
   const rows = useMemo(() => {
-    return active.filter(
+    // The Closed card swaps the grid to the (otherwise hidden) closed projects.
+    const base = cardFilter === 'closed' ? closedProjects : active;
+    return base.filter(
       (p) =>
+        cardMatch(p) &&
         (!fClient || p.client === fClient) &&
         (!fLead || p.lead === fLead) &&
         (!fStatus || p.statusRaw === fStatus) &&
@@ -286,10 +376,11 @@ function OverviewBody({
         (!fRegion || p.region === fRegion) &&
         (!attnOnly || p.rag !== 'on'),
     );
-  }, [active, fClient, fLead, fStatus, fType, fRegion, attnOnly]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, closedProjects, cardFilter, fClient, fLead, fStatus, fType, fRegion, attnOnly]);
 
   const uniq = (arr: string[]): string[] => [...new Set(arr.filter(Boolean))].sort();
-  const hasFilters = !!(fClient || fLead || fStatus || fType || fRegion || attnOnly);
+  const hasFilters = !!(fClient || fLead || fStatus || fType || fRegion || attnOnly || cardFilter);
   const clearFilters = (): void => {
     setFClient('');
     setFLead('');
@@ -297,6 +388,7 @@ function OverviewBody({
     setFType('');
     setFRegion('');
     setAttnOnly(false);
+    setCardFilter('');
   };
 
   return (
@@ -313,10 +405,24 @@ function OverviewBody({
       {/* intro */}
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
         <div>
-          <div style={{ font: '800 22px "Open Sans",sans-serif' }}>Portfolio Overview</div>
-          <div style={{ fontSize: 12, color: 'var(--vl-faint)', marginTop: 2 }}>
-            Delivery health across {kpi.totalProjects} active projects · what needs attention this week
-            {closedProjects.length > 0 && ` · ${closedProjects.length} closed projects excluded (regions only)`}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ font: '800 22px "Open Sans",sans-serif' }}>Portfolio Overview</div>
+              <div style={{ fontSize: 12, color: 'var(--vl-faint)', marginTop: 2 }}>
+                Delivery health across {kpi.totalProjects} active projects · what needs attention this week
+                {closedProjects.length > 0 && ` · ${closedProjects.length} closed projects excluded (regions only)`}
+              </div>
+            </div>
+            <div
+              onClick={refreshing ? undefined : onRefresh}
+              title="Re-fetch all projects in the background — the page stays interactive"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: refreshing ? 'default' : 'pointer', border: `1px solid ${refreshing ? C.orange : 'var(--vl-borderStrong)'}`, background: 'var(--vl-card)', color: refreshing ? C.amberText : 'var(--vl-brandText)', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 700 }}
+            >
+              <span style={{ display: 'inline-block', animation: refreshing ? 'vlSpin 1s linear infinite' : undefined }}>↻</span>
+              {refreshing
+                ? `Refreshing… ${refreshProgress.done}/${refreshProgress.total}`
+                : 'Refresh'}
+            </div>
           </div>
         </div>
       </div>
@@ -339,6 +445,8 @@ function OverviewBody({
           iconBg="#e7f3ec"
           label="In Delivery"
           value={kpi.active}
+          onClick={() => pickCard('inDelivery')}
+          selected={cardFilter === 'inDelivery'}
           sub={
             <span title="Projects whose Project Status is set to 'In Progress' in Project Information. Projects with no status set are not counted here — filling Delivery Status makes this number meaningful.">
               Project Status = In Progress · {kpi.noStatus} not set
@@ -350,6 +458,8 @@ function OverviewBody({
           iconBg="#e3edfb"
           label="Support"
           value={kpi.support}
+          onClick={() => pickCard('support')}
+          selected={cardFilter === 'support'}
           sub={<span title="Active projects whose Project Type is 'Support' in Project Information.">Project Type = Support</span>}
         />
         <Kpi
@@ -357,6 +467,8 @@ function OverviewBody({
           iconBg="#f3e9fb"
           label="Resourcing Model"
           value={kpi.resourcing}
+          onClick={() => pickCard('resourcing')}
+          selected={cardFilter === 'resourcing'}
           sub={<span title="Active projects whose Project Type is 'Resourcing Model' in Project Information.">staff augmentation</span>}
         />
         <Kpi
@@ -364,6 +476,8 @@ function OverviewBody({
           iconBg="#f3f2f1"
           label="Internal"
           value={kpi.internal}
+          onClick={() => pickCard('internal')}
+          selected={cardFilter === 'internal'}
           sub={
             <span title={`Active projects tagged Project Type = Internal. Learning/internship: ${kpi.learning}. Projects with no Project Type set: ${kpi.noType}.`}>
               +{kpi.learning} learning · {kpi.noType} untyped
@@ -375,6 +489,8 @@ function OverviewBody({
           iconBg="#e7f3ec"
           label="Closed Projects"
           value={closedProjects.length}
+          onClick={() => pickCard('closed')}
+          selected={cardFilter === 'closed'}
           valueColor={C.greenSoft}
           sub="phase Closed · counted in regions only"
         />
@@ -394,11 +510,12 @@ function OverviewBody({
           }
           subColor={C.redHard}
           topBar={C.red}
-          onClick={() => setAttnOnly(true)}
+          onClick={() => pickCard('overdue')}
+          selected={cardFilter === 'overdue'}
         />
-        <Kpi icon={<IconList />} iconBg="#eef0f8" label="Open Tasks" value={kpi.openTask} sub={<><b>{kpi.overdueTask}</b> overdue</>} subColor={C.redHard} />
-        <Kpi icon={<IconBug />} iconBg="#fdeede" label="Open Bugs" value={kpi.openBug} sub={`Task : Bug = ${kpi.taskBugRatio}`} />
-        <Kpi icon={<IconChat />} iconBg="#fdeede" label="Open Items" value={kpi.openItems} sub="clarifications & blockers" />
+        <Kpi icon={<IconList />} iconBg="#eef0f8" label="Open Tasks" value={kpi.openTask} sub={<><b>{kpi.overdueTask}</b> overdue</>} subColor={C.redHard} onClick={() => pickCard('tasks')} selected={cardFilter === 'tasks'} />
+        <Kpi icon={<IconBug />} iconBg="#fdeede" label="Open Bugs" value={kpi.openBug} sub={`Task : Bug = ${kpi.taskBugRatio}`} onClick={() => pickCard('bugs')} selected={cardFilter === 'bugs'} />
+        <Kpi icon={<IconChat />} iconBg="#fdeede" label="Open Items" value={kpi.openItems} sub="clarifications & blockers" onClick={() => pickCard('items')} selected={cardFilter === 'items'} />
       </div>
 
       {/* insights: needs attention + region */}
@@ -567,10 +684,20 @@ function OverviewBody({
       </Card>
 
       {/* projects table */}
+      <div ref={gridRef}>
       <Card style={{ overflow: 'hidden' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap', padding: '11px 14px', borderBottom: `1px solid ${C.line2}` }}>
           <div style={{ font: '600 13px "Open Sans",sans-serif', alignSelf: 'center' }}>
             Projects <span style={{ color: C.faint, fontWeight: 400 }}>· {rows.length} shown · click a row to drill in</span>
+            {cardFilter && (
+              <span
+                onClick={() => setCardFilter('')}
+                style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: C.amberText, background: '#fdeede', border: `1px solid ${C.orange}`, borderRadius: 9, padding: '2px 9px', cursor: 'pointer' }}
+                title="Click to clear this card filter"
+              >
+                {CARD_LABEL[cardFilter]} ✕
+              </span>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', justifyContent: 'flex-end' }}>
             <Filter label="Client Name" value={fClient} onChange={setFClient} options={uniq(active.map((p) => p.client))} />
@@ -644,6 +771,7 @@ function OverviewBody({
           </table>
         </div>
       </Card>
+      </div>
     </div>
   );
 }
@@ -666,6 +794,7 @@ function labelStatus(v: string): string {
   const m: Record<string, string> = {
     NotStarted: 'Not Started',
     InProgress: 'In Progress',
+    Perpetual: 'Perpetual (Continuous)',
     OnHold: 'On Hold',
     Completed: 'Completed',
     Cancelled: 'Cancelled',
@@ -697,6 +826,7 @@ function Kpi({
   subColor,
   topBar,
   onClick,
+  selected,
 }: {
   icon: ReactNode;
   iconBg: string;
@@ -708,13 +838,16 @@ function Kpi({
   subColor?: string;
   topBar?: string;
   onClick?: () => void;
+  selected?: boolean;
 }) {
   return (
     <div
       onClick={onClick}
+      title={onClick ? (selected ? 'Click to clear this filter' : 'Click to filter the Projects grid below') : undefined}
       style={{
-        background: 'var(--vl-card)',
-        border: `1px solid ${C.line}`,
+        background: selected ? 'var(--vl-hover)' : 'var(--vl-card)',
+        border: `1px solid ${selected ? C.orange : C.line}`,
+        outline: selected ? `1px solid ${C.orange}` : undefined,
         borderRadius: 10,
         padding: '13px 15px',
         boxShadow: '0 1px 2px rgba(16,24,64,.05)',
